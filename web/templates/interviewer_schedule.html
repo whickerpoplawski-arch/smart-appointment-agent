@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>面试官今日日程 - 面试预约助手</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            padding: 30px;
+            color: white;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.1), transparent);
+            animation: shimmer 3s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            100% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+
+        .header h2 {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+        }
+
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .schedule-info {
+            background: linear-gradient(135deg, rgba(79, 172, 254, 0.1), rgba(0, 242, 254, 0.1));
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 25px;
+            text-align: center;
+        }
+
+        .schedule-info h3 {
+            color: #4facfe;
+            margin-bottom: 10px;
+            font-size: 20px;
+        }
+
+        .schedule-info p {
+            color: #666;
+            margin-bottom: 6px;
+            line-height: 1.6;
+        }
+
+        .time-legend {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 40px;
+            margin: 20px 0;
+            color: #666;
+            font-weight: 500;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+        }
+
+        .summary-bar {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 25px;
+        }
+
+        .summary-card {
+            background: white;
+            border-radius: 14px;
+            padding: 18px;
+            text-align: center;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+        }
+
+        .summary-card .value {
+            font-size: 26px;
+            font-weight: bold;
+            color: #4facfe;
+            margin-bottom: 6px;
+        }
+
+        .summary-card .label {
+            font-size: 13px;
+            color: #666;
+        }
+
+        .timeline-container {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        .hour-scale {
+            display: flex;
+            margin-left: 200px;
+            margin-bottom: 6px;
+            color: #999;
+            font-size: 12px;
+        }
+
+        .hour-scale span {
+            flex: 1;
+            text-align: left;
+        }
+
+        .timeline-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 14px;
+            padding: 14px;
+            background: rgba(248, 250, 252, 0.6);
+            border-radius: 12px;
+            transition: all 0.3s ease;
+        }
+
+        .timeline-row:hover {
+            background: rgba(79, 172, 254, 0.06);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+        }
+
+        .info {
+            width: 180px;
+            text-align: left;
+            padding-right: 16px;
+        }
+
+        .interviewer-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 6px;
+        }
+
+        .interviewer-meta {
+            font-size: 12px;
+            color: #888;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .department-tag {
+            background: rgba(79, 172, 254, 0.12);
+            color: #2d8fd5;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+
+        .utilization {
+            margin-top: 8px;
+        }
+
+        .utilization-bar {
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(0,0,0,0.06);
+            overflow: hidden;
+        }
+
+        .utilization-fill {
+            height: 100%;
+            border-radius: 3px;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            transition: width 0.3s ease;
+        }
+
+        .utilization-fill.is-high {
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+        }
+
+        .utilization-text {
+            font-size: 11px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        .timeline {
+            position: relative;
+            flex: 1;
+            height: 42px;
+            background: linear-gradient(to right, #f8f9fa, #e9ecef);
+            border-radius: 20px;
+            margin-left: 20px;
+            border: 2px solid rgba(0,0,0,0.05);
+            overflow: hidden;
+        }
+
+        .busy-block {
+            position: absolute;
+            height: 100%;
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            border-radius: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 11px;
+            font-weight: 600;
+            box-shadow: 0 2px 8px rgba(250, 112, 154, 0.3);
+            transition: all 0.3s ease;
+            overflow: hidden;
+            white-space: nowrap;
+            padding: 0 4px;
+            text-overflow: ellipsis;
+        }
+
+        .busy-block:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(250, 112, 154, 0.5);
+        }
+
+        .time-markers {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+        }
+
+        .time-marker {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: rgba(0,0,0,0.1);
+        }
+
+        .nav-btn {
+            padding: 12px 26px;
+            border-radius: 25px;
+            border: none;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 8px 25px rgba(79, 172, 254, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            margin: 0 6px;
+        }
+
+        .nav-btn.secondary {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            box-shadow: 0 8px 25px rgba(245, 87, 108, 0.3);
+        }
+
+        .nav-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .actions {
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .empty-state,
+        .error-state {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .empty-state i,
+        .error-state i {
+            font-size: 48px;
+            color: #ddd;
+            margin-bottom: 20px;
+        }
+
+        .error-state i {
+            color: #f3a4b5;
+        }
+
+        @media (max-width: 900px) {
+            .container {
+                margin: 10px;
+                border-radius: 15px;
+            }
+
+            .header, .content {
+                padding: 20px;
+            }
+
+            .hour-scale {
+                display: none;
+            }
+
+            .timeline-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .info {
+                width: 100%;
+                text-align: center;
+                margin-bottom: 12px;
+            }
+
+            .timeline {
+                margin-left: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>
+                <i class="fas fa-calendar-alt"></i>
+                面试官今日日程
+            </h2>
+            <p>按时间段查看每位面试官的面试安排与空档</p>
+        </div>
+
+        <div class="content">
+            {% if error %}
+            <div class="error-state">
+                <i class="fas fa-triangle-exclamation"></i>
+                <h3>日程加载失败</h3>
+                <p>{{ error }}</p>
+            </div>
+            {% else %}
+            <div class="schedule-info">
+                <h3><i class="fas fa-clock"></i> 面试时间说明</h3>
+                <p>今日日期：{{ current_date }}（北京时间）</p>
+                <p>标准面试时段：{{ work_start_hour }}:00 - {{ work_end_hour }}:00，其余时间不参与时段匹配</p>
+                <p>色块表示已安排的面试，悬停可查看候选人、岗位与轮次；空白区域为可预约时段</p>
+            </div>
+
+            <div class="summary-bar">
+                <div class="summary-card">
+                    <div class="value">{{ schedule|length }}</div>
+                    <div class="label">今日在职面试官</div>
+                </div>
+                <div class="summary-card">
+                    <div class="value" id="busyTotal">0</div>
+                    <div class="label">今日面试场次</div>
+                </div>
+                <div class="summary-card">
+                    <div class="value" id="freeTotal">{{ schedule|length }}</div>
+                    <div class="label">当前无安排的面试官</div>
+                </div>
+            </div>
+
+            <div class="time-legend">
+                <div class="legend-item">
+                    <i class="fas fa-hourglass-start"></i>
+                    <span>{{ work_start_hour }}:00 开始</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot"></span>
+                    <span>已安排面试</span>
+                </div>
+                <div class="legend-item">
+                    <i class="fas fa-hourglass-end"></i>
+                    <span>{{ work_end_hour }}:00 结束</span>
+                </div>
+            </div>
+
+            <div class="timeline-container">
+                {% if schedule and schedule|length > 0 %}
+                    <div class="hour-scale">
+                        {% for hour in range(work_start_hour, work_end_hour) %}
+                        <span>{{ hour }}:00</span>
+                        {% endfor %}
+                    </div>
+
+                    {% set total_minutes = (work_end_hour - work_start_hour) * 60 %}
+                    {% set base_minutes = work_start_hour * 60 %}
+
+                    {% for interviewer in schedule %}
+                    {% set busy_periods = interviewer.busy_periods %}
+                    <div class="timeline-row">
+                        <div class="info">
+                            <div class="interviewer-name">{{ interviewer.name }}</div>
+                            <div class="interviewer-meta">
+                                <span class="department-tag">{{ interviewer.department }}</span>
+                                <span>ID: {{ interviewer.id }}</span>
+                            </div>
+                            <div class="utilization">
+                                <div class="utilization-bar">
+                                    <div class="utilization-fill {{ 'is-high' if interviewer.utilization >= 70 else '' }}"
+                                         style="width: {{ interviewer.utilization }}%;"></div>
+                                </div>
+                                <div class="utilization-text">
+                                    今日占用 {{ interviewer.utilization }}%
+                                    {% if interviewer.utilization == 0 %}· 全天空档{% elif interviewer.utilization >= 70 %}· 接近排满{% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="timeline">
+                            <!-- 整点刻度 -->
+                            <div class="time-markers">
+                                {% for hour in range(work_start_hour + 1, work_end_hour) %}
+                                <div class="time-marker" style="left: {{ ((hour - work_start_hour) / (work_end_hour - work_start_hour)) * 100 }}%;"></div>
+                                {% endfor %}
+                            </div>
+
+                            <!-- 面试时段：按分钟换算成百分比，超出标准时段的部分做边界裁剪 -->
+                            {% for period in busy_periods %}
+                            {% set start_parts = period.start.split(':') %}
+                            {% set end_parts = period.end.split(':') %}
+                            {% set start_minutes = (start_parts[0]|int) * 60 + (start_parts[1]|int) %}
+                            {% set end_minutes = (end_parts[0]|int) * 60 + (end_parts[1]|int) %}
+                            {% set clamped_start = [start_minutes - base_minutes, 0]|max %}
+                            {% set clamped_end = [end_minutes - base_minutes, total_minutes]|min %}
+                            {% if clamped_end > clamped_start %}
+                            {% set left = (clamped_start / total_minutes) * 100 %}
+                            {% set width = ((clamped_end - clamped_start) / total_minutes) * 100 %}
+                            <div class="busy-block"
+                                 style="left: {{ left }}%; width: {{ width }}%;"
+                                 title="{{ period.start }}-{{ period.end }} {{ period.candidate_name or '面试安排' }} {{ period.position or '' }} {{ period.round or '' }}（{{ period.mode or '线上' }}）">
+                                {{ period.round or '面试' }}
+                            </div>
+                            {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-state">
+                        <i class="fas fa-calendar-check"></i>
+                        <h3>今日暂无面试安排</h3>
+                        <p>所有面试官今日均无已排定的面试，可在对话中直接发起预约</p>
+                    </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <div class="actions">
+                <a href="/" class="nav-btn">
+                    <i class="fas fa-home"></i>
+                    返回主界面
+                </a>
+                <a href="/interviewer" class="nav-btn secondary">
+                    <i class="fas fa-user-tie"></i>
+                    面试官状态
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 汇总统计：面试场次与空闲面试官数量，避免服务端再算一遍
+        (function () {
+            const blocks = document.querySelectorAll('.busy-block');
+            const busyTotalElement = document.getElementById('busyTotal');
+            const freeTotalElement = document.getElementById('freeTotal');
+            if (busyTotalElement) {
+                busyTotalElement.textContent = blocks.length;
+            }
+
+            if (freeTotalElement) {
+                let freeCount = 0;
+                document.querySelectorAll('.timeline-row').forEach(function (row) {
+                    if (row.querySelectorAll('.busy-block').length === 0) {
+                        freeCount += 1;
+                    }
+                });
+                freeTotalElement.textContent = freeCount;
+            }
+        })();
+    </script>
+</body>
+</html>
