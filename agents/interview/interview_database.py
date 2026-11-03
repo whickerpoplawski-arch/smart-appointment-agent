@@ -88,8 +88,8 @@ class InterviewDatabase:
             # 服务层已回滚事务，这里不再写日程与行为，避免留下半条记录
             return False, "数据库写入失败，可能该时段刚被占用"
 
-        # 更新内存中的忙碌时段缓存
-        self.update_memory_schedule(interviewer_id, start_time, end_time)
+        # 不写内存忙碌缓存（P2）：唯一事实源是 `interviewer_schedules`，
+        # 同一份「忙时段」存两份就会漂移（进程重启即丢一半，多进程各有一份）。
         # 记录候选人行为（失败不影响面试本身）
         self._record_candidate_behavior(start_time, end_time, interviewer_id,
                                         interview_history, session_id)

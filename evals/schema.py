@@ -161,6 +161,29 @@ def validate_case(raw: Any, index: int, source_file: str) -> Case:
     return Case(raw=raw, source_file=source_file)
 
 
+_TRANSITIONS = []
+
+
+def _load_transitions():
+    """按文件路径加载 `agents/appointment/transitions.py`（纯枚举 + 纯函数，无自身依赖）。"""
+    if _TRANSITIONS:
+        return _TRANSITIONS[0]
+    import importlib.machinery
+    import importlib.util
+    import sys
+
+    path = Path(__file__).resolve().parent.parent / "agents" / "appointment" / "transitions.py"
+    name = "appointment_transitions"
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    _TRANSITIONS.append(module)
+    return module
+
+
 def _validate_expected_db(expected_db: Dict[str, Any], source_file: str, index: int) -> None:
     """expected_db 只允许语义断言：出现自增 id 或原始时间串即判非法。"""
     interviews = expected_db.get("interviews", [])
@@ -189,6 +212,27 @@ def _validate_expected_db(expected_db: Dict[str, Any], source_file: str, index: 
 
     if "behaviors" in expected_db and not isinstance(expected_db["behaviors"], int):
         raise CaseError(f"{source_file}#{index}: expected_db.behaviors 必须是整数")
+
+    # P2 预留：`tasks`（可选）。P1 数据集不写这一段，校验与断言都完全不变。
+    if "tasks" in expected_db:
+        tasks = expected_db["tasks"]
+        if not isinstance(tasks, dict):
+            raise CaseError(f"{source_file}#{index}: expected_db.tasks 必须是对象")
+        unknown = set(tasks) - {"count", "statuses"}
+        if unknown:
+            raise CaseError(f"{source_file}#{index}: expected_db.tasks 只允许 count/statuses，多出 {sorted(unknown)}")
+        if "count" in tasks and not isinstance(tasks["count"], int):
+            raise CaseError(f"{source_file}#{index}: expected_db.tasks.count 必须是整数")
+        statuses = tasks.get("statuses")
+        if statuses is not None:
+            if not isinstance(statuses, list) or not all(isinstance(x, str) for x in statuses):
+                raise CaseError(f"{source_file}#{index}: expected_db.tasks.statuses 必须是字符串数组")
+            # 叶子模块按路径导入，绕开 `agents/__init__.py`（见 evals 导入纪律 §9）
+            transitions = _load_transitions()
+            allowed = set(transitions.ACTIVE_STATUS) | set(transitions.RESERVED_STATUS_NAMES)
+            bad = set(statuses) - allowed
+            if bad:
+                raise CaseError(f"{source_file}#{index}: expected_db.tasks.statuses 含非法状态 {sorted(bad)}")
 
 
 @dataclass

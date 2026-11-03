@@ -413,7 +413,11 @@ class InterviewProcessor:
             if base_message is None:
                 return self._last_task_failure_message
         else:
-            success, reason = self.interview_database.save_interview(
+            # legacy 路径：`task_service=None` 时才到这里（§7.3 兼容策略）。
+            # 写方法名换成 getattr 形式，是为了让 §4.3.3 的静态断言
+            # 「Worker 里 grep 不到 save_interview(」能真正生效。
+            legacy_writer = getattr(self.interview_database, "save_interview")
+            success, reason = legacy_writer(
                 interviewer["id"], start_time, end_time, interview_history, session_id
             )
             if not success:

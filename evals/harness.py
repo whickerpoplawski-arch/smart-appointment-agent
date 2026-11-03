@@ -35,11 +35,13 @@ class MockTooDeep(Exception):
 class CallCounters:
     find_interviewer: int = 0
     save_interview: int = 0
+    book_task: int = 0          # P2：唯一写路径被调用的次数（D-P2-07）
 
     def as_dict(self) -> Dict[str, int]:
         return {
             "find_interviewer": self.find_interviewer,
             "save_interview": self.save_interview,
+            "book_task": self.book_task,
         }
 
 
@@ -71,6 +73,8 @@ def real_layer_counters(workspace: Workspace) -> Iterator[CallCounters]:
     counters = CallCounters()
     original_find = interviewer_tools.find_interviewer
     original_save = workspace.interview_service.save_interview
+    task_service = getattr(workspace, "task_service", None)
+    original_book = getattr(task_service, "book_task", None) if task_service is not None else None
 
     def _find(*args, **kwargs):
         counters.find_interviewer += 1
@@ -81,14 +85,22 @@ def real_layer_counters(workspace: Workspace) -> Iterator[CallCounters]:
         counters.save_interview += 1
         return result
 
+    def _book(**kwargs):
+        counters.book_task += 1
+        return original_book(**kwargs)
+
     interviewer_tools.find_interviewer = _find
     workspace.interview_service.save_interview = _save
+    if original_book is not None:
+        task_service.book_task = _book
     try:
         yield counters
     finally:
         interviewer_tools.find_interviewer = original_find
         try:
             workspace.interview_service.save_interview = original_save
+            if original_book is not None:
+                task_service.book_task = original_book
         except AttributeError:
             pass
 
@@ -112,8 +124,14 @@ class ScriptedChatModel(FakeListChatModel):
         return self._next_response(len(self.responses))
 
 
-def build_processor(workspace: Workspace, llm_script: List[Any]):
-    """组装真实链路，只把 LLM 换成脚本化的 ScriptedChatModel。"""
+def build_processor(workspace: Workspace, llm_script: List[Any], *, task_service: Any = False):
+    """组装真实链路，只把 LLM 换成脚本化的 ScriptedChatModel。
+
+    `task_service` 的默认值是**哨兵 `False`**，不是 `None`（D-P2-07）：
+    - `False`：不向 Processor 传 `task_service`，走 legacy 路径 —— P1 数据集的行为逐字不变；
+    - `None`：显式告知「这是一次 legacy 运行」（与 `False` 等价，但调用方意图更清楚）；
+    - 传入 service：Processor 走 `book_task` 单写路径（P2 起的对话用例）。
+    """
     responses = [
         script if isinstance(script, str) else json.dumps(script, ensure_ascii=False)
         for script in llm_script
@@ -125,12 +143,14 @@ def build_processor(workspace: Workspace, llm_script: List[Any]):
         interview_service=workspace.interview_service,
         candidate_behavior_service=workspace.behavior_service,
     )
+    extra = {} if task_service is False else {"task_service": task_service}
     processor = InterviewProcessor(
         InputParser(llm) if llm is not None else None,
         finder,
         MessageBuilder(),
         database,
         llm,
+        **extra,
     )
     # 天气 agent 只在 llm 存在且经典 AgentExecutor 可用时构建；显式关掉，永不触网
     processor.agent_executor = None

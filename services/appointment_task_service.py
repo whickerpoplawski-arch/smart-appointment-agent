@@ -196,6 +196,10 @@ class AppointmentTaskService:
             return self._book_failure(task_id, "illegal_actor", "task_not_found")
         return self._repo.cancel_for_task(task_id, actor)
 
+    def next_chat_seq(self, session_id: str) -> int:
+        """`chat:<session_id>:<seq>` 的下一个 seq（从已落库的键反解，重启可续，§6.2）。"""
+        return self._repo.next_chat_seq(session_id)
+
     def attach_task(self, task_id: str, session_id: str) -> bool:
         """受控接管：只允许 `session_id IS NULL → 非空`，不迁状态（§6.2）。"""
         return self._repo.attach_session(task_id, session_id)

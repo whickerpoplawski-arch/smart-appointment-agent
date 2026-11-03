@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from db.models import CandidateBehavior, Interview, Interviewer, InterviewerSchedule
+from db.models import (AppointmentTask, CandidateBehavior, Interview, Interviewer,
+                       InterviewerSchedule)
 from evals.schema import BEIJING_TZ, parse_local_time
 
 FAILURE_CODES = (
@@ -72,6 +73,22 @@ class DbSnapshot:
     def close(self) -> None:
         self.engine.dispose()
 
+    @staticmethod
+    def _read_tasks(session) -> List[Dict[str, Any]]:
+        """工单快照（P2 预留）。只读可断言字段，自增/时间戳留给 `created_at` 一类禁列。"""
+        rows = session.query(AppointmentTask).order_by(AppointmentTask.created_at).all()
+        return [
+            {
+                "status": row.status,
+                "reason": row.reason,
+                "cancel_actor": row.cancel_actor,
+                "last_error_code": row.last_error_code,
+                "committed": row.committed_at is not None,
+                "verified": row.verified_at is not None,
+            }
+            for row in rows
+        ]
+
     def read(self) -> Dict[str, Any]:
         session = self.Session()
         try:
@@ -102,13 +119,32 @@ class DbSnapshot:
                 for row in session.query(InterviewerSchedule).order_by(InterviewerSchedule.id).all()
             ]
             behaviors = session.query(CandidateBehavior).count()
-            return {"interviews": interviews, "schedules": schedules, "behaviors": behaviors}
+            return {"interviews": interviews, "schedules": schedules, "behaviors": behaviors,
+                    "tasks": self._read_tasks(session)}
         finally:
             session.close()
 
 
 def _match_key(interviewer: str, start: str, duration_minutes: int) -> Tuple[str, str, int]:
     return interviewer, _normalize(parse_local_time(start)).strftime("%Y-%m-%d %H:%M"), int(duration_minutes)
+
+
+def _evaluate_tasks(expected: Dict[str, Any], before: List[Dict[str, Any]],
+                    after: List[Dict[str, Any]], result: AssertionResult) -> None:
+    """工单断言（P2 预留，P1 数据集不写 `tasks` 即完全不受影响）。
+
+    只暴露两个口径：
+    - `count`：新增工单数（按行数差）；
+    - `statuses`：新增工单的终态集合（多重集合，顺序无关）。
+    """
+    new_rows = after[len(before):]
+    if "count" in expected and len(new_rows) != expected["count"]:
+        result.fail("wrong_task_count", f"新增工单期望 {expected['count']}，实际 {len(new_rows)}")
+    if "statuses" in expected:
+        got = sorted(row["status"] for row in new_rows)
+        want = sorted(expected["statuses"])
+        if got != want:
+            result.fail("wrong_task_status", f"新增工单状态期望 {want}，实际 {got}")
 
 
 def evaluate(expected_db: Dict[str, Any], baseline: Dict[str, Any], observed: Dict[str, Any]) -> AssertionResult:
@@ -186,6 +222,9 @@ def evaluate(expected_db: Dict[str, Any], baseline: Dict[str, Any], observed: Di
     free_after = sum(1 for row in observed["schedules"] if row["status"] == "free")
     if "free_delta" in schedules and free_after - free_before != schedules["free_delta"]:
         result.fail("wrong_schedule", f"free 增量期望 {schedules['free_delta']}，实际 {free_after - free_before}")
+
+    if "tasks" in expected_db:
+        _evaluate_tasks(expected_db["tasks"], baseline.get("tasks", []), observed.get("tasks", []), result)
 
     if "behaviors" in expected_db:
         behavior_delta = observed["behaviors"] - baseline["behaviors"]

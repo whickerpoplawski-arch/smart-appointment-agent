@@ -5,6 +5,8 @@
    `sqlite:///data/interview_agent.db`——任何一个漏传就会写进仓库真实库。
 2. `SessionManager` 构造即 `create_all`，所以「只是构造一下」也算碰库。
 3. `interviewer_busy_periods` 是模块级全局 dict，且被两个模块 from-import 绑定。
+   （P2 起生产代码不再写它——唯一事实源是 `interviewer_schedules`；这里仍清一次，
+   防止历史状态或第三方代码留下的残留影响用例。）
 """
 
 from __future__ import annotations
@@ -51,6 +53,8 @@ class Workspace:
     interview_service: Any
     behavior_service: Any
     name_to_id: Dict[str, int]
+    # P2 预留（D-P2-08）：Worker 侧的工单服务；P1 数据集不传（哨兵 False），行为逐字不变
+    task_service: Any = None
 
     def interviewer_id(self, name: str) -> int:
         try:
@@ -63,6 +67,7 @@ class Workspace:
             (self.interviewer_service, "db"),
             (self.interview_service, "db_router"),
             (self.behavior_service, "db_router"),
+            (getattr(self, "task_service", None), "_db_router"),
         ):
             router = getattr(service, attr, None)
             close = getattr(router, "close", None)
@@ -91,6 +96,7 @@ def create_workspace(case_id: str, root: Path, pre_conditions: Optional[Dict[str
     from services.candidate_behavior_service import CandidateBehaviorService
     from services.interview_service import InterviewService
     from services.interviewer_service import InterviewerService
+    from services.appointment_task_service import AppointmentTaskService
 
     _clear_busy_caches()
 
@@ -119,6 +125,8 @@ def create_workspace(case_id: str, root: Path, pre_conditions: Optional[Dict[str
         interview_service=interview_service,
         behavior_service=behavior_service,
         name_to_id=name_to_id,
+        # 显式 `db_path=`：AppointmentTaskService 惰性连接，构造不建库（P2-D8）
+        task_service=AppointmentTaskService(db_path=db_url),
     )
     # 直接走 repository：InterviewerService 没有透出 add_schedule
     for busy in (pre_conditions or {}).get("busy") or []:

@@ -25,3 +25,5 @@
   `InterviewerService()` 默认 `db_path`），T5 一并改为显式 tmp 路径。
 - **P2-D13**：`mark_failed` 对已终态返回 `task_terminal`（不是 `illegal_transition`）；`error_code=None`
   不覆盖已有 `last_error_code`。
+| T4 Worker 绑定 | 绿 `e3c03b5` / `2d78f13` | `test_appointment_worker.py` 21 passed；全量 202；evals 1.0 |
+| T5 Agent 装配 + 重启 + evals 预留 | 绿 | `test_appointment_persistence.py` 6（真子进程）、`test_write_entry_points.py` 13；全量 **221**；evals 1.0；真实库 sha256 不变 |
