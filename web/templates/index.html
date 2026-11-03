@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>智能预约助手 - AI聊天机器人</title>
+    <title>面试预约助手 - AI聊天机器人</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         * {
@@ -368,30 +368,30 @@
         <div class="header">
             <div class="header-title">
                 <i class="fas fa-robot"></i>
-                智能预约助手
+                面试预约助手
             </div>
             <div class="header-subtitle">
-                AI驱动的按摩房预约系统 - 为您提供便捷智能的预约体验
+                AI 驱动的面试预约系统 - 候选人自助预约面试官，自动匹配空闲时段
             </div>
         </div>
-        
+
         <!-- 导航栏 -->
         <div class="nav-bar">
-            <button class="nav-btn" onclick="window.location.href='/user_behavior'">
+            <button class="nav-btn" onclick="window.location.href='/interviewer'">
+                <i class="fas fa-user-tie"></i>
+                面试官状态
+            </button>
+            <button class="nav-btn" onclick="window.location.href='/interviewer_schedule'">
+                <i class="fas fa-calendar-alt"></i>
+                面试官日程
+            </button>
+            <button class="nav-btn" onclick="window.location.href='/candidate_analysis'">
                 <i class="fas fa-chart-line"></i>
-                用户行为分析
+                候选人分析
             </button>
             <button class="nav-btn" onclick="window.location.href='/knowledge'">
                 <i class="fas fa-database"></i>
-                知识库管理
-            </button>
-            <button class="nav-btn" onclick="window.location.href='/technician'">
-                <i class="fas fa-users"></i>
-                技师状态
-            </button>
-            <button class="nav-btn" onclick="window.location.href='/technician_schedule'">
-                <i class="fas fa-calendar-alt"></i>
-                技师排班
+                面试知识库
             </button>
             <button class="nav-btn" id="clear-btn">
                 <i class="fas fa-trash-alt"></i>
@@ -408,17 +408,17 @@
                 </div>
                 <div class="bubble">
                     <div class="bot-info">
-                        👋 您好！我是智能预约助手，很高兴为您服务！
+                        👋 您好！我是面试预约助手，很高兴为您服务！
                     </div>
                     <div class="bot-reply">
                         我可以帮您：<br>
-                        • 🕐 预约按摩服务<br>
-                        • 👨‍⚕️ 查询技师状态<br>
-                        • 📅 安排预约时间<br>
-                        • ❓ 解答相关问题
+                        • 📅 预约面试时间与面试官<br>
+                        • 👔 按应聘岗位匹配对口面试官<br>
+                        • 🔄 面试官时间冲突时推荐同方向人选<br>
+                        • 💬 解答面试流程、材料与改期问题
                     </div>
                     <div class="bot-success">
-                        请告诉我您需要什么帮助？
+                        请告诉我您的姓名、应聘岗位，以及方便面试的时间
                     </div>
                 </div>
             </div>
@@ -437,7 +437,7 @@
         <!-- 输入区域 -->
         <div class="input-area">
             <form id="chat-form">
-                <input type="text" id="user-input" placeholder="请输入您的问题或需求..." autocomplete="off" required>
+                <input type="text" id="user-input" placeholder="例如：我是张三，想约明天下午三点面试后端开发，一面" autocomplete="off" required>
                 <button id="send-btn" type="submit">
                     <i class="fas fa-paper-plane"></i>
                     发送
@@ -515,14 +515,14 @@
                     
                     // 检查回复类型并应用不同样式
                     let styledReply = replyText;
-                    if (replyText.includes('预约成功') || replyText.includes('已为您预约')) {
-                        // 成功消息
+                    if (replyText.includes('预约成功') || replyText.includes('已为候选人')) {
+                        // 面试预约成功
                         styledReply = `<div class="bot-success">✅ ${replyText}</div>`;
-                    } else if (replyText.includes('抱歉') || replyText.includes('失败') || replyText.includes('不空闲')) {
-                        // 错误消息
+                    } else if (replyText.includes('抱歉') || replyText.includes('失败') || replyText.includes('已有安排') || replyText.includes('没有空闲')) {
+                        // 面试预约失败或冲突
                         styledReply = `<div class="bot-error">❌ ${replyText}</div>`;
-                    } else if (replyText.includes('请问') || replyText.includes('需要')) {
-                        // 询问消息
+                    } else if (replyText.includes('请问') || replyText.includes('需要') || replyText.includes('愿意')) {
+                        // 追问缺失信息或推荐确认
                         styledReply = `<div class="bot-info">💬 ${replyText}</div>`;
                     } else {
                         // 普通回复，使用突出的颜色

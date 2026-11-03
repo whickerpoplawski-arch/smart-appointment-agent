@@ -1,211 +1,111 @@
-# Smart Appointment AI Agent
+# 待面试人员预约 Agent
 
-Smart Appointment AI Agent 是一个面向按摩门店场景的智能预约与咨询系统。项目基于 FastAPI、LangChain、FAISS、SQLite 和多 Agent 协作架构，实现了意图识别、RAG 知识问答、技师智能匹配、预约管理、用户行为分析和个性化提醒等能力。
+面向招聘面试场景的智能预约与咨询系统。候选人可以在对话中说明应聘岗位、面试轮次和时间，系统自动匹配合适的面试官、检查日程冲突、完成预约并生成提醒；同时提供面试 FAQ 知识问答、面试官日程管理和候选人偏好分析。
 
-这个项目的核心目标不是只做一个普通的预约表单，而是尝试把门店前台日常需要处理的高频工作自动化：理解用户想咨询还是预约，判断服务偏好，匹配合适技师，检查可用时间，生成预约结果，并在必要时结合天气、历史行为和偏好数据给出更贴近用户的提醒与推荐。
-
-## 项目背景
-
-在一次按摩门店体验中，我注意到前台人员需要同时处理大量复杂事务：技师排班、顾客预约、服务项目咨询、价格计算、临时改约、技师偏好记录和收款确认等。随着技师数量和顾客量增加，传统人工前台模式很容易出现沟通成本高、信息遗漏、排班冲突和服务体验不稳定的问题。
-
-因此，本项目尝试用 AI Agent 的方式重构这一流程：让系统能够像一个智能前台一样主动理解用户需求，并把不同任务分发给对应的专业 Agent 处理。它既适用于按摩门店，也可以扩展到其他需要人员排班、预约调度和智能客服的服务行业。
+项目基于 FastAPI、LangChain、FAISS、SQLite 与多 Agent 协作架构，保留了原「门店预约系统」的五层架构与工程实践，把业务域整体替换为招聘面试。
 
 ## 核心能力
 
-- **智能任务分类**：自动识别用户是在咨询服务、预约技师、查询无关问题，还是触发用户行为分析，并将请求路由到对应 Agent。
-- **多 Agent 协作**：通过任务分类 Agent、咨询 Agent、预约 Agent 和用户行为 Agent 分工处理复杂流程，减少单个模块的职责膨胀。
-- **RAG 知识咨询**：使用 FAISS 向量索引检索知识库内容，结合大模型生成自然语言回答，支持流式输出。
-- **智能预约管理**：根据用户需求、技师专长、历史偏好和可用时间进行匹配，辅助完成预约确认。
-- **用户行为分析**：记录用户交互与预约行为，分析偏好模式，并用于后续推荐和个性化反馈。
-- **个性化提醒**：在预约完成后，可结合实时天气等外部信息生成更贴近实际场景的提醒。
-- **Embedding 缓存优化**：通过数据库缓存和文件缓存减少重复向量计算，提高知识检索性能。
-- **数据管理能力**：支持知识库、技师信息和用户行为数据的增删改查，并在数据变化后自动维护索引。
-- **日志与兜底机制**：保留关键处理过程日志，在信息不足或异常情况下提供更稳定的降级处理。
+- **意图识别与路由**：判断消息属于面试预约、面试咨询、无关问题还是后台分析，并分发给对应 Agent。
+- **多 Agent 协作**：任务分类 Agent、咨询 Agent、面试预约 Agent、候选人行为 Agent 各司其职。
+- **RAG 面试咨询**：用 FAISS 检索面试 FAQ 知识库，结合大模型回答流程、轮次、材料、地点、改期等问题，支持流式输出。
+- **智能面试预约**：按应聘岗位匹配招聘方向，检查面试官日程；指定面试官冲突时按简介相似度推荐同方向且空闲的面试官，等候选人确认后再落库。
+- **日程与冲突控制**：面试记录与面试官忙碌日程在同一事务内写入，冲突或异常整体回滚。
+- **候选人偏好分析**：记录面试预约行为，分析常申岗位、常选面试官、常用轮次与时段，用于后续推荐和跟进提醒。
+- **面试提醒**：线下面试结合天气给出行与到场建议；线上面试提醒网络、摄像头、麦克风与会议链接。
+- **数据管理**：知识库、面试官、日程和候选人行为的增删改查，数据变化后自动维护检索索引。
+- **降级与兜底**：LLM、Embedding、天气服务不可用时退化为模板文案或默认排序，不阻断预约主流程。
+
+## 角色与流程
+
+候选人发起预约，系统为其匹配面试官：
+
+```text
+候选人输入
+  → 解析：姓名 / 应聘岗位 / 面试轮次 / 形式 / 时间 / 时长 / 指定面试官 / 偏好
+  → 必填校验（姓名、岗位、轮次、时间）
+  → 匹配：岗位方向 + 该时段空闲
+      ├ 指定面试官空闲 → 直接预约
+      ├ 指定面试官忙碌 → 推荐同方向空闲面试官 → 候选人确认
+      └ 无可用面试官 → 给出改期建议
+  → 落库：面试记录 + 面试官忙碌日程（同一事务）+ 候选人行为
+  → 生成成功消息与面试提醒
+```
+
+面试形式默认「线上」。时长未说明时按轮次取默认值：一面 45 分钟、二面 60 分钟、HR 面 30 分钟、终面 30 分钟。轮次与形式记录在面试记录中，不参与面试官筛选。
 
 ## 系统架构
 
-项目采用严格的五层架构，核心原则是：**下层不能反向调用上层**。这样可以避免循环依赖，让业务逻辑、数据访问和接口编排保持清晰边界。
+五层架构，核心原则是下层不反向调用上层：
 
 ```text
-Web & Application Layer
-    ↓  app.py, web/：页面、路由入口、系统启动
-API Layer
-    ↓  api/：外部接口、请求编排、响应封装
-Agents Layer
-    ↓  agents/：AI Agent、任务路由、对话流程控制
-Services Layer
-    ↓  services/：业务逻辑、推荐算法、向量处理
-DB Layer
-    ↓  db/：数据模型、数据库连接、Repository
+Web & Application Layer   app.py, web/          页面、路由入口、启动
+API Layer                 api/                  外部接口、请求编排、响应封装
+Agents Layer              agents/               Agent、任务路由、对话流程
+Services Layer            services/            业务逻辑、推荐、向量处理
+DB Layer                  db/                  数据模型、连接、Repository
 ```
 
-### 允许的调用方向
+允许的调用方向：
 
 - Web 层调用 API 层
 - API 层调用 Agents 层或 Services 层
 - Agents 层调用 Services 层
 - Services 层调用 DB 层
 
-### 禁止的调用方式
+禁止：下层反向调用上层；Web 绕过 API 直接访问 Services/DB；Agents 绕过 Services 直接访问 DB。
 
-- 下层反向调用上层
-- Web 层绕过 API 直接访问 Services 或 DB
-- Agents 层绕过 Services 直接访问 DB
-- Services 层调用 Agents、API 或 Web
+### Agent 设计
 
-## Agent 设计
+- **Task Classification Agent**：意图分析、Agent 路由、对话状态管理、无关请求兜底。
+- **Consultation Agent**：区分咨询类型，检索面试 FAQ，构建提示词并流式回答。
+- **Interview Agent**：解析预约信息、匹配面试官、处理推荐确认、写入预约并生成提醒。
+- **Candidate Behavior Agent**：记录候选人的面试行为，分析偏好模式，生成跟进提醒。
 
-### Task Classification Agent
-
-任务分类 Agent 是系统的主调度器，负责分析用户输入、判断任务类型，并把请求分发给合适的专业 Agent。
+## 数据模型
 
 ```text
-用户输入 → 意图分析 → Agent 路由 → 响应协调
+interviewers             id, name(unique), department, bio
+interviewer_schedules    id, interviewer_id, start_time, end_time, status, interview_id
+interviews               id, candidate_name, position, round, mode, interviewer_id,
+                         start_time, end_time, status, session_id, created_at
+knowledge_documents      知识库文档与向量
+candidate_behaviors      候选人行为记录（action_type='interview' 等）
+candidate_preferences    候选人偏好（岗位、轮次、时段、面试官）
+candidate_recommendations 候选人推荐与跟进提醒
 ```
 
-主要职责：
+面试记录承载业务语义，面试官日程只负责占用与冲突检查，两者通过 `interview_id` 关联。
 
-- 判断用户意图
-- 维护对话状态
-- 控制不同 Agent 之间的切换
-- 处理无法分类或超出能力范围的问题
-
-### Consultation Agent
-
-咨询 Agent 负责知识问答场景，使用 RAG 流程从知识库中检索相关内容，再结合大模型生成回答。
+## 目录结构
 
 ```text
-任务分类 → 知识检索 → FAISS 相似度搜索 → 流式回答
-```
-
-主要职责：
-
-- 区分咨询问题类型
-- 从知识库检索相关内容
-- 构建提示词
-- 生成自然语言回答
-
-### Appointment Agent
-
-预约 Agent 负责预约相关流程，包括解析用户输入、匹配技师、检查预约信息、生成确认消息等。
-
-```text
-任务分类 → 解析预约需求 → 技师匹配 → 预约确认
-```
-
-主要职责：
-
-- 提取预约时间、服务项目、技师偏好等信息
-- 匹配合适技师
-- 处理信息缺失时的追问
-- 生成预约结果和提醒
-
-### User Behavior Agent
-
-用户行为 Agent 更偏向后台智能分析，不完全依赖用户显式请求。它会根据交互记录、预约历史和偏好数据分析用户行为，为后续推荐提供依据。
-
-```text
-行为记录 → 模式分析 → 偏好更新 → 个性化推荐
-```
-
-主要职责：
-
-- 记录用户行为
-- 分析偏好模式
-- 生成推荐依据
-- 支持主动反馈和个性化服务
-
-## 核心设计思想
-
-### 1. 用任务分类降低系统复杂度
-
-系统并不让一个 Agent 处理所有事情，而是先判断用户意图，再分发给对应模块。这样可以让咨询、预约、行为分析等逻辑保持独立，也更容易扩展新的 Agent。
-
-### 2. 用 RAG 解决专业知识回答
-
-按摩服务相关的项目介绍、注意事项、适用人群等内容更适合通过知识库维护。RAG 能让回答基于可控知识来源，而不是完全依赖大模型自由生成。
-
-### 3. 用用户行为让推荐更个性化
-
-系统会记录用户的咨询、预约和偏好信息。后续在推荐技师或服务项目时，可以结合历史行为，而不是每次都从零开始询问。
-
-### 4. 用分层架构保证可维护性
-
-Agent 负责智能流程，Service 负责业务逻辑，Repository 负责数据访问。每层只关心自己的职责，减少后期修改时的连锁影响。
-
-### 5. 为真实业务场景预留扩展空间
-
-项目目前以本地 SQLite 和单体服务为主，但架构上预留了模型提供商切换、MCP 外部服务接入、后台任务、缓存优化和云端部署的扩展方向。
-
-## 架构图
-
-![System Architecture](./architecture%20.jpg)
-
-## 技术栈
-
-- **后端框架**：FastAPI、Uvicorn
-- **AI 框架**：LangChain
-- **大模型接入**：兼容 OpenAI 格式的模型提供商，例如 Qwen、DeepSeek、Zhipu、OpenAI、Azure OpenAI
-- **向量检索**：FAISS
-- **数据库**：SQLite、SQLAlchemy
-- **RAG 能力**：Embedding、向量索引、知识库检索、提示词构建
-- **流式响应**：Python AsyncGenerator
-- **前端页面**：Jinja2 模板、静态 CSS
-- **外部服务扩展**：MCP，用于天气等外部信息接入
-- **配置管理**：python-dotenv
-- **后台任务**：schedule
-
-## 项目结构
-
-```text
-Smart appointment AI agent/
-├── agents/                         # 多 Agent 智能层
-│   ├── task_classification_agent.py # 任务分类与主路由
-│   ├── consultant_agent.py          # RAG 咨询 Agent
-│   ├── appointment_agent.py         # 智能预约 Agent
-│   ├── user_behavior_agent.py       # 用户行为分析 Agent
-│   ├── task_classification/         # 意图识别、状态管理、路由逻辑
-│   ├── consultant/                  # 知识检索、提示词、回答生成
-│   ├── appointment/                 # 预约解析、技师匹配、消息构建
-│   └── user_behavior/               # 行为记录、偏好管理、模式分析
-├── api/                             # API 编排层
-│   ├── appointment.py               # 预约接口
-│   ├── consultation.py              # 咨询接口
-│   ├── task.py                      # 任务分类接口
-│   ├── chat_handler.py              # 流式聊天处理
-│   ├── technician.py                # 技师管理接口
-│   ├── knowledge.py                 # 知识库管理接口
-│   └── user_behavior_analysis.py    # 用户行为分析接口
-├── services/                        # 业务逻辑层
-│   ├── appointment_service.py       # 预约业务逻辑
-│   ├── knowledge_service.py         # 知识库管理
-│   ├── recommendation_service.py    # 推荐逻辑
-│   ├── technician_service.py        # 技师信息管理
-│   ├── text_embedding.py            # Embedding 与向量处理
-│   └── user_behavior_service.py     # 用户行为服务
-├── db/                              # 数据持久化层
-│   ├── models.py                    # SQLAlchemy 模型
-│   ├── db_router.py                 # 数据库路由
-│   ├── local_db.py                  # 本地数据库操作
-│   ├── base/                        # 数据库基础接口
-│   └── repositories/                # Repository 数据访问封装
-├── config/                          # 配置模块
-│   ├── constants.py                 # 常量与枚举
-│   ├── database.py                  # 数据库配置
-│   ├── model_provider.py            # 模型与 Embedding Provider 工厂
-│   ├── settings.py                  # 应用配置
-│   └── time_config.py               # 时间与排班配置
-├── web/                             # Web 页面层
-│   ├── routes.py                    # 页面路由
-│   ├── templates/                   # HTML 模板
-│   └── static/                      # 静态资源
-├── mcp-server/                      # MCP 外部服务扩展
-├── data/                            # 数据库与缓存目录
-├── tests/                           # 测试用例
+待面试人员预约 Agent/
+├── agents/                          # Agent 层
+│   ├── interview/                   # 解析、面试官匹配、消息构建、落库
+│   ├── candidate_behavior/          # 候选人行为记录、偏好分析
+│   ├── consultant/                  # RAG 咨询
+│   └── task_classification/         # 意图分类与路由
+├── api/                             # 接口层
+│   ├── interview.py                 # 面试预约接口
+│   ├── interviewer.py               # 面试官与日程接口
+│   ├── candidate_analysis.py        # 候选人分析接口
+│   └── knowledge.py                 # 知识库接口
+├── services/                        # 业务层
+│   ├── interview_service.py
+│   ├── interviewer_service.py
+│   ├── candidate_behavior_service.py
+│   └── knowledge_service.py
+├── db/                              # 数据层
+│   ├── models.py
+│   ├── db_router.py
+│   └── repositories/
+├── web/                             # 页面与模板
+├── data/                            # SQLite 数据库
+├── tests/                           # 测试
 ├── app.py                           # 应用入口
-├── requirements.txt                 # Python 依赖
-├── .env.example                     # 环境变量模板
-└── README.md                        # 项目说明
+├── requirements.txt
+└── .env.example
 ```
 
 ## 快速开始
@@ -222,13 +122,7 @@ Windows PowerShell：
 .\.venv\Scripts\Activate.ps1
 ```
 
-Windows CMD：
-
-```cmd
-.venv\Scripts\activate.bat
-```
-
-macOS 或 Linux：
+macOS / Linux：
 
 ```bash
 source .venv/bin/activate
@@ -242,19 +136,17 @@ pip install -r requirements.txt
 
 ### 3. 配置环境变量
 
-复制环境变量模板：
-
 ```bash
 cp .env.example .env
 ```
 
-Windows PowerShell 可以使用：
+Windows PowerShell：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-然后在 `.env` 中填写模型和数据库配置。项目支持 OpenAI 兼容格式的大模型与 Embedding 服务。
+在 `.env` 中填写模型与数据库配置：
 
 ```env
 MODEL_PROVIDER=qwen
@@ -267,18 +159,13 @@ EMBEDDING_API_KEY=your_embedding_api_key_here
 EMBEDDING_BASE_URL=your_openai_compatible_embedding_base_url_here
 EMBEDDING_MODEL=your_embedding_model_name_here
 
-DATABASE_URL=sqlite:///./data/smart_appointment.db
+DATABASE_URL=sqlite:///data/interview_agent.db
 
 DEBUG=True
 LOG_LEVEL=INFO
 ```
 
-常见配置方向：
-
-- Qwen：使用阿里云百炼或 DashScope 的模型、Base URL 和 API Key。
-- DeepSeek：可用于聊天模型，Embedding 可搭配其他兼容服务。
-- Zhipu：可配置智谱的聊天模型和向量模型。
-- Azure OpenAI：将 `MODEL_PROVIDER` 设置为 `azure`，并补充对应的 Azure OpenAI 环境变量。
+支持 OpenAI 兼容格式的聊天与 Embedding 服务，也支持 Azure OpenAI（`MODEL_PROVIDER=azure`）。
 
 ### 4. 启动服务
 
@@ -286,73 +173,50 @@ LOG_LEVEL=INFO
 python -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-如果 8000 端口已被占用，可以换成 8001：
-
-```bash
-python -m uvicorn app:app --host 127.0.0.1 --port 8001 --reload
-```
-
-启动后可以访问：
+访问：
 
 - Web 页面：http://127.0.0.1:8000
 - API 文档：http://127.0.0.1:8000/docs
-- ReDoc 文档：http://127.0.0.1:8000/redoc
+- ReDoc：http://127.0.0.1:8000/redoc
+
+## 主要页面
+
+| 页面 | 路径 | 模板 |
+|---|---|---|
+| 聊天与预约 | `/` | `web/templates/index.html` |
+| 面试官管理 | `/interviewer` | `web/templates/interviewer.html` |
+| 面试官日程 | `/interviewer_schedule` | `web/templates/interviewer_schedule.html` |
+| 候选人分析 | `/candidate_analysis` | `web/templates/candidate_analysis.html` |
+| 知识库管理 | `/knowledge` | `web/templates/knowledge_management.html` |
+| 系统管理 | `/admin` | `web/templates/admin_dashboard.html` |
+
+主要接口：
+
+- `GET /api/interviewers/`、`GET /api/interviewers/{id}`
+- `GET /api/interviewers/{id}/schedule`、`GET /api/interviewers/schedules/today`
+- `GET /api/interviews/`、`GET /api/interviews/{id}`
+
+## 种子数据
+
+首次启动会写入 10 位面试官（后端 3、前端 2、算法 2、产品 1、测试 1、HR 1），并按需写入 8 条面试 FAQ：面试流程、各轮次考察重点、线上面试须知、线下面试地址与交通、需携带材料、改期政策、结果通知时间、薪资沟通节点。
 
 ## 测试
-
-运行全部测试：
 
 ```bash
 pytest
 ```
 
-运行单个测试文件：
+测试覆盖：输入解析与状态累积、轮次默认时长、推荐确认与拒绝、按岗位匹配面试官、指定面试官冲突推荐、无可用面试官、事务落库与冲突回滚、候选人行为与偏好分析、咨询提示词与分类、任务路由与状态流转。
 
-```bash
-pytest tests/test_task_classification_agent.py
-```
+## 设计取舍
 
-## 主要页面
-
-- 首页聊天与预约入口：`web/templates/index.html`
-- 知识库管理：`web/templates/knowledge_management.html`
-- 技师管理：`web/templates/technician.html`
-- 技师排班：`web/templates/technician_schedule.html`
-- 用户行为分析：`web/templates/user_behavior_analysis.html`
-
-## 后续规划
-
-### 更强的 Agent 自主能力
-
-- 增加 Agent 自我反思机制，让系统能够评估回答质量和预约成功率。
-- 引入更完整的多轮推理链，提升复杂预约和冲突处理能力。
-- 根据真实用户反馈优化推荐策略。
-
-### 更完整的多 Agent 协作
-
-- 增加 Agent-to-Agent 通信机制，减少所有任务都依赖主分类器转发的问题。
-- 将用户行为 Agent 的后台分析能力做得更稳定，支持定时任务和主动触达。
-- 把预约、推荐、咨询之间的上下文记忆打通得更自然。
-
-### 生产化能力
-
-- 增加用户登录、权限控制和数据隔离。
-- 增加更完整的异常处理和边界场景覆盖。
-- 优化向量检索性能、缓存策略和响应速度。
-- 支持 Docker 部署、云数据库和更标准的日志监控。
-
-## 项目价值
-
-这个项目把多 Agent、RAG、用户行为分析、预约调度和外部工具接入放在同一个真实业务场景中验证。它既是一个按摩门店智能前台原型，也可以作为学习 AI Agent 工程化、分层架构、RAG 系统和业务自动化的综合实践项目。
+- **轮次不参与筛选**：面试官表保持精简（方向 + 简介），轮次只影响默认时长与文案。若业务需要，可给 `interviewers` 增加 `rounds` 字段，不影响其他模块。
+- **单候选人场景**：沿用原项目的单用户会话模型，候选人只采集姓名，不建完整候选人主表。
+- **不迁移历史数据**：业务域已更换，旧按摩门店数据无复用价值，数据库重建。
 
 
+- [待面试人员预约 Agent 设计](docs/superpowers/specs/2026-10-26-interview-appointment-agent-design.md)：面试官域改造的完整设计（词汇表、数据模型、预约流程、文件映射）。
 
-------------------------------------------------------------
-这个项目是我最早开始自学大模型做的项目。上面的内容是当时（2025年7月左右完成的）。
-其实我在计划做更加复杂，符合时代趋势的Agent，预计在9月份完成，会分享在笔记中。
-但是很多朋友问我这个项目能不能参考，所以我索性总结开源了除了。值得一提的是，上面的内容是25年写的，当时如何配置环境，都是传统方法，写在README中，自己配置。 但是在2026年，不管是vibe coding的方法，还是环境配置的方法，都有了极大改进。
+## 项目来源
 
-我的项目配置的方法，现在都推荐使用SKILL，所以这里有setup-envrionment skill，一键配置。
-我也总结了更多的这个项目，放在2026年，如何包装，如何使用配套资源，面试真题，视频讲解，使用建议在我的大模型笔记中。
-👉 **请关注小红书：[不转到大模型不改名]（id:4740535877) 获取以上所有资源。**
-👉 b站： 骑猪撞宝马71
+本项目由原作者的开源项目 [jerry-ai-dev/smart-appointment-ai-agent](https://github.com/jerry-ai-dev/smart-appointment-ai-agent)（按摩门店技师预约系统）改造而来，保留了其分层架构、多 Agent 协作与 RAG 工程实践，业务域替换为招聘面试预约。

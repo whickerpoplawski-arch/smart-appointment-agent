@@ -40,7 +40,7 @@ class ConsultationProcessor:
             async for token in self.response_generator.generate_response_stream(user_input, knowledge_docs):
                 yield token
             
-            # 3. 记录用户行为
+            # 3. 记录候选人行为
             await self._record_consultation_behavior(user_input, knowledge_docs, session_id)
             
         except Exception as e:
@@ -61,10 +61,10 @@ class ConsultationProcessor:
                 yield token
     
     async def _record_consultation_behavior(self, user_input: str, knowledge_docs: list, session_id: str):
-        """记录咨询行为"""
+        """记录候选人咨询行为"""
         try:
-            from agents.user_behavior_agent import UserBehaviorAgent
-            behavior_agent = UserBehaviorAgent()
+            from agents.candidate_behavior_agent import CandidateBehaviorAgent
+            behavior_agent = CandidateBehaviorAgent()
             
             action_data = {
                 'question': user_input,
@@ -79,4 +79,4 @@ class ConsultationProcessor:
             )
             
         except Exception as behavior_error:
-            print(f"记录咨询行为失败：{behavior_error}")
+            print(f"记录候选人咨询行为失败：{behavior_error}")

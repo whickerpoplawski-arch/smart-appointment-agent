@@ -58,3 +58,7 @@ Thumbs.db
 
 # --- Jupyter ---
 .ipynb_checkpoints/
+
+# --- Evals ---
+# 评测产物（用例结果、transcript）不入库；只提交 datasets 与 README
+evals/runs/

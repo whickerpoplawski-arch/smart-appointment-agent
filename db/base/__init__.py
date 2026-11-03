@@ -8,11 +8,19 @@ Database Base Module
 """
 
 from .session_manager import SessionManager
-from .interfaces import BaseTechnicianRepository, BaseKnowledgeRepository, BaseUserBehaviorRepository
+from .interfaces import (
+    BaseInterviewerRepository,
+    BaseScheduleRepository,
+    BaseInterviewRepository,
+    BaseKnowledgeRepository,
+    BaseCandidateBehaviorRepository,
+)
 
 __all__ = [
     'SessionManager',
-    'BaseTechnicianRepository',
-    'BaseKnowledgeRepository', 
-    'BaseUserBehaviorRepository'
+    'BaseInterviewerRepository',
+    'BaseScheduleRepository',
+    'BaseInterviewRepository',
+    'BaseKnowledgeRepository',
+    'BaseCandidateBehaviorRepository',
 ]

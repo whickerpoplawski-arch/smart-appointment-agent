@@ -1,0 +1,5 @@
+{
+  "dataset_version": "interview_v1.0.0",
+  "reference_now": "2099-01-01 00:00",
+  "description": "P1 预约评测基线：DB 终态为判据；live 默认跳过"
+}

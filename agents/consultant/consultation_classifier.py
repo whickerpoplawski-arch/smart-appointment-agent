@@ -1,7 +1,7 @@
 """
 咨询分类器
 
-负责判断用户输入是否为咨询类问题
+负责判断候选人输入是否为咨询类问题
 """
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -16,7 +16,7 @@ class ConsultationClassifier:
         self.prompt_builder = PromptBuilder()
     
     async def is_consultation_related(self, user_input: str) -> bool:
-        """检查用户输入是否与咨询相关"""
+        """检查候选人输入是否与咨询相关"""
         try:
             prompt = self.prompt_builder.build_classification_prompt(user_input)
             response = await self.llm.ainvoke([{"role": "user", "content": prompt}])

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>知识库管理 - 智能预约系统</title>
+    <title>面试知识库管理 - 面试预约助手</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         * {
@@ -465,8 +465,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h2><i class="fas fa-brain"></i> 知识库管理系统</h2>
-            <p>管理推拿房知识库，测试智能检索功能</p>
+            <h2><i class="fas fa-brain"></i> 面试知识库管理</h2>
+            <p>维护面试流程、轮次考察、材料准备与改期政策等 FAQ，供咨询 Agent 检索回答</p>
         </div>
         
         <div class="content">
@@ -500,7 +500,7 @@
                 <h3>🔍 智能搜索测试</h3>
                 <div class="form-group">
                     <label for="searchQuery">搜索查询：</label>
-                    <input type="text" id="searchQuery" class="form-control" placeholder="输入搜索内容，如：营业时间、价格、技师等">
+                    <input type="text" id="searchQuery" class="form-control" placeholder="输入面试相关问题，如：线上面试要准备什么、可以改期几次">
                 </div>
                 <div style="display: flex; gap: 15px;">
                     <div class="form-group" style="flex: 1;">
@@ -539,15 +539,15 @@
                 <form id="addKnowledgeForm">
                     <div class="form-group">
                         <label for="newContent">知识内容：</label>
-                        <textarea id="newContent" class="form-control" rows="4" placeholder="输入知识内容"></textarea>
+                        <textarea id="newContent" class="form-control" rows="4" placeholder="例如：改期与取消政策：如需改期，请至少提前 24 小时联系招聘对接人"></textarea>
                     </div>
                     <div class="form-group">
                         <label for="newCategory">分类：</label>
-                        <input type="text" id="newCategory" class="form-control" placeholder="如：营业时间、服务项目等">
+                        <input type="text" id="newCategory" class="form-control" placeholder="如：面试流程、轮次考察、面试材料、改期政策">
                     </div>
                     <div class="form-group">
                         <label for="newKeywords">关键词（用逗号分隔）：</label>
-                        <input type="text" id="newKeywords" class="form-control" placeholder="如：营业时间,开门,关门,几点">
+                        <input type="text" id="newKeywords" class="form-control" placeholder="如：改期,取消,提前24小时,政策">
                     </div>
                     <button type="submit" class="btn btn-success">✅ 添加知识</button>
                     <button type="button" class="btn btn-secondary" onclick="clearAddForm()">🗑️ 清空表单</button>
@@ -976,34 +976,5 @@
         }
     </script>
     </div>
-</body>
-</html>
-            const alertClass = type === 'success' ? 'alert-success' : 'alert-error';
-            const alertHtml = `<div class="alert ${alertClass}">${message}</div>`;
-            
-            if (containerId) {
-                document.getElementById(containerId).innerHTML = alertHtml;
-            } else {
-                // 在页面顶部显示
-                const container = document.querySelector('.container');
-                const alertDiv = document.createElement('div');
-                alertDiv.innerHTML = alertHtml;
-                container.insertBefore(alertDiv, container.firstChild);
-                
-                // 3秒后自动消失
-                setTimeout(() => {
-                    alertDiv.remove();
-                }, 3000);
-            }
-        }
-        
-        // 点击模态框外部关闭
-        window.onclick = function(event) {
-            const modal = document.getElementById('editModal');
-            if (event.target === modal) {
-                closeEditModal();
-            }
-        }
-    </script>
 </body>
 </html>

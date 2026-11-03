@@ -8,36 +8,42 @@ Database Module
 - 会话管理
 """
 
-from .db_router import DatabaseRouter, TechnicianDBRouter, KnowledgeDBRouter
-from .repositories import TechnicianRepository, KnowledgeRepository, UserBehaviorRepository
+from .db_router import DatabaseRouter, InterviewerDBRouter
+from .repositories import (
+    InterviewerRepository,
+    InterviewRepository,
+    KnowledgeRepository,
+    CandidateBehaviorRepository,
+)
 from .base import SessionManager
 from .models import (
-    Base, Technician, TechnicianSchedule, 
-    KnowledgeDocument, UserBehavior, UserPreference, UserRecommendation
+    Base, Interviewer, InterviewerSchedule, Interview,
+    KnowledgeDocument, CandidateBehavior, CandidatePreference, CandidateRecommendation
 )
 
 __all__ = [
     # 主要入口
     'DatabaseRouter',
-    
+
     # 兼容性路由器
-    'TechnicianDBRouter',
-    'KnowledgeDBRouter',
-    
+    'InterviewerDBRouter',
+
     # Repository模式
-    'TechnicianRepository',
-    'KnowledgeRepository', 
-    'UserBehaviorRepository',
-    
+    'InterviewerRepository',
+    'InterviewRepository',
+    'KnowledgeRepository',
+    'CandidateBehaviorRepository',
+
     # 基础设施
     'SessionManager',
-    
+
     # 数据模型
     'Base',
-    'Technician',
-    'TechnicianSchedule',
+    'Interviewer',
+    'InterviewerSchedule',
+    'Interview',
     'KnowledgeDocument',
-    'UserBehavior',
-    'UserPreference',
-    'UserRecommendation'
+    'CandidateBehavior',
+    'CandidatePreference',
+    'CandidateRecommendation'
 ]

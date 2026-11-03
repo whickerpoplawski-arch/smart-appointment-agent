@@ -14,5 +14,8 @@ numpy>=1.21.0
 schedule>=1.2.0
 sqlalchemy>=1.4.0
 requests>=2.25.0
+# 线下面试出行提醒会调用天气接口，面试处理器直接 import aiohttp，
+# 不能只依赖其它包的传递依赖
+aiohttp>=3.9.0
 mcp>=1.0.0
 langchain-experimental>=0.3,<1.0

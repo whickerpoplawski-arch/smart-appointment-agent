@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据库统计 - 面试预约助手</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            padding: 30px;
+            color: white;
+            text-align: center;
+        }
+
+        .header h2 {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+        }
+
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .table-container {
+            background: white;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+            margin-bottom: 24px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 16px 14px;
+            text-align: left;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 16px 14px;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            font-size: 14px;
+            color: #444;
+        }
+
+        td.count {
+            text-align: right;
+            font-weight: 700;
+            color: #4facfe;
+            font-size: 18px;
+        }
+
+        .hint {
+            background: linear-gradient(135deg, rgba(79, 172, 254, 0.1), rgba(0, 242, 254, 0.1));
+            border-radius: 12px;
+            padding: 18px;
+            color: #555;
+            font-size: 14px;
+            line-height: 1.7;
+            margin-bottom: 24px;
+        }
+
+        .nav-btn {
+            padding: 12px 26px;
+            border-radius: 25px;
+            border: none;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 8px 25px rgba(79, 172, 254, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            margin: 0 6px;
+        }
+
+        .nav-btn.secondary {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            box-shadow: 0 8px 25px rgba(245, 87, 108, 0.3);
+        }
+
+        .actions {
+            text-align: center;
+        }
+
+        .error-state {
+            text-align: center;
+            padding: 30px;
+            color: #b25c6b;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2><i class="fas fa-database"></i> 数据库统计</h2>
+            <p>面试预约系统的核心数据规模与分布</p>
+        </div>
+
+        <div class="content">
+            {% if error %}
+            <div class="error-state">
+                <i class="fas fa-triangle-exclamation"></i>
+                <h3>统计数据加载失败</h3>
+                <p>{{ error }}</p>
+            </div>
+            {% endif %}
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>数据表</th>
+                            <th>说明</th>
+                            <th style="text-align: right;">记录数</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>interviewers</code></td>
+                            <td>面试官（按招聘方向组织）</td>
+                            <td class="count">{{ stats.interviewers or 0 }}</td>
+                        </tr>
+                        <tr>
+                            <td><code>interviews</code></td>
+                            <td>面试预约记录（候选人 / 岗位 / 轮次 / 形式）</td>
+                            <td class="count">{{ stats.interviews or 0 }}</td>
+                        </tr>
+                        <tr>
+                            <td><code>interviews（已取消）</code></td>
+                            <td>状态为 cancelled 的面试记录</td>
+                            <td class="count">{{ stats.cancelled_interviews or 0 }}</td>
+                        </tr>
+                        <tr>
+                            <td><code>knowledge_documents</code></td>
+                            <td>面试 FAQ 知识条目</td>
+                            <td class="count">{{ stats.knowledge_documents or 0 }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="hint">
+                <strong>说明：</strong>面试记录与面试官日程通过 <code>interview_id</code> 关联，
+                面试官日程只表达时段占用，候选人姓名、岗位、轮次与形式等业务信息全部保存在 <code>interviews</code> 表。
+                数据库文件默认位于 <code>data/interview_agent.db</code>。
+            </div>
+
+            <div class="actions">
+                <a href="/" class="nav-btn">
+                    <i class="fas fa-home"></i>
+                    返回主界面
+                </a>
+                <a href="/admin" class="nav-btn secondary">
+                    <i class="fas fa-sliders-h"></i>
+                    系统概览
+                </a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
