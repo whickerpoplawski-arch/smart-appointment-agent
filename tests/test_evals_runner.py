@@ -131,7 +131,7 @@ class TestHarness:
             destroy_workspace(workspace)
 
     def test_dialogue_uses_real_finder(self, tmp_path):
-        from evals.harness import run_dialogue
+        from evals.harness import build_deps, run_dialogue
 
         workspace = create_workspace("smoke_dialogue", tmp_path)
         try:
@@ -141,6 +141,7 @@ class TestHarness:
                     ["我想约 2099-05-04 15:00 后端一面"],
                     [_script(candidate_name="张三", start_time="2099-05-04 15:00")],
                     "smoke",
+                    deps=build_deps(workspace, session_id="smoke"),
                 )
             )
             assert outcome["reply_class"] == "success"

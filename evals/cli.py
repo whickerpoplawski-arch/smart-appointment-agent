@@ -106,6 +106,16 @@ def _print_summary(summary, path: Path) -> None:
         print(f"pending  : {[item['case_id'] for item in summary['pending_cases']]}")
     if summary["coverage_unhit"]:
         print(f"unhit    : {summary['coverage_unhit']}")
+    # P3：六缝事件流（§9.4 / §12.6）
+    events = summary.get("events") or {}
+    print(f"events   : written={events.get('written', 0)} dropped={events.get('dropped', 0)} "
+          f"seams={sum((events.get('seams') or {}).values())} -> {events.get('file')}")
+    if summary.get("tool_calls"):
+        print(f"tools    : {summary['tool_calls']}")
+    if summary.get("seams_seen"):
+        print(f"seams    : {summary['seams_seen']}")
+    if (events.get("dropped") or 0) > 0:
+        print(f"[warn] 事件 sink 丢弃了 {events['dropped']} 条事件（写入失败不阻断业务，但轨迹不完整）")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -113,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run_parser = sub.add_parser("run", help="跑一个数据集并打分")
-    run_parser.add_argument("--dataset", default="interview_v1")
+    run_parser.add_argument("--dataset", default="interview_v2")
     run_parser.add_argument("--tag", default=None, help="只跑含该标签的用例，例如 regression / capability")
     run_parser.add_argument("--case-id", action="append", default=None, help="只跑指定 case（可重复）")
     run_parser.add_argument("--k", type=int, default=1, help="重复跑 k 次（默认 1）")
@@ -128,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     eval_parser.set_defaults(func=cmd_evaluate)
 
     list_parser = sub.add_parser("list", help="列出数据集用例")
-    list_parser.add_argument("--dataset", default="interview_v1")
+    list_parser.add_argument("--dataset", default="interview_v2")
     list_parser.set_defaults(func=cmd_list)
     return parser
 

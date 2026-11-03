@@ -85,7 +85,10 @@ candidate_recommendations 候选人推荐与跟进提醒
 │   ├── interview/                   # 解析、面试官匹配、消息构建、落库
 │   ├── candidate_behavior/          # 候选人行为记录、偏好分析
 │   ├── consultant/                  # RAG 咨询
-│   └── task_classification/         # 意图分类与路由
+│   ├── task_classification/         # 意图分类与路由
+│   ├── appointment/                 # 工单状态机与 Worker 事件（P2）
+│   ├── tools/                       # 四个显式工具（纯函数）+ ToolDeps + registry（P3）
+│   └── observability/               # 六缝事件、EventEmitter、JSONLSink、脱敏（P3）
 ├── api/                             # 接口层
 │   ├── interview.py                 # 面试预约接口
 │   ├── interviewer.py               # 面试官与日程接口
@@ -102,6 +105,8 @@ candidate_recommendations 候选人推荐与跟进提醒
 │   └── repositories/
 ├── web/                             # 页面与模板
 ├── data/                            # SQLite 数据库
+├── evals/                           # 评测：datasets/（interview_v1、interview_v2）、runs、golden
+├── tools/                           # replay_trajectory.py（轨迹回放）、数据集生成脚本
 ├── tests/                           # 测试
 ├── app.py                           # 应用入口
 ├── requirements.txt
@@ -206,7 +211,17 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 pytest
 ```
 
-测试覆盖：输入解析与状态累积、轮次默认时长、推荐确认与拒绝、按岗位匹配面试官、指定面试官冲突推荐、无可用面试官、事务落库与冲突回滚、候选人行为与偏好分析、咨询提示词与分类、任务路由与状态流转。
+测试覆盖：输入解析与状态累积、轮次默认时长、推荐确认与拒绝、按岗位匹配面试官、指定面试官冲突推荐、无可用面试官、事务落库与冲突回滚、候选人行为与偏好分析、咨询提示词与分类、任务路由与状态流转。P2 起另有：工单状态机与步骤计数、`book_task` 单事务与幂等账本、重启恢复。P3 起另有：四个工具的合同（`tests/test_tools_*.py`）、registry 单一写入、六缝事件与 sink 违约降级、`--strict` 回放规则 ①–⑥、golden 轨迹、`interview_v2` 数据集的 schema 与整跑。
+
+评测：
+
+```bash
+python -m evals list                              # 列出当前数据集用例
+python -m evals run --dataset interview_v2        # 默认数据集；结果进 evals/runs/<run_id>/
+python -m evals run --dataset interview_v1 --tag regression   # 只跑旧形态回归
+```
+
+`interview_v2.0.0` 共 25 条（capability 17 + regression 8），live 1 条默认跳过，`n_pending = 0`。
 
 ## 设计取舍
 
@@ -220,3 +235,26 @@ pytest
 ## 项目来源
 
 本项目由原作者的开源项目 [jerry-ai-dev/smart-appointment-ai-agent](https://github.com/jerry-ai-dev/smart-appointment-ai-agent)（按摩门店技师预约系统）改造而来，保留了其分层架构、多 Agent 协作与 RAG 工程实践，业务域替换为招聘面试预约。
+
+## 怎么看轨迹
+
+每次对话都会把六缝事件写成一行一个 JSON（JSONL）：`inbound`（谁说了什么）→ `classify`（路由到哪条支路）→ `tool_call` / `tool_result`（调了哪个工具、参数、结果）→ `db_commit`（库改了哪几张表、什么状态迁移）→ `reply`（回了什么、有没有宣称成功）。
+
+- 生产/本地对话：`logs/trajectories/<task_id>.jsonl`。入口那条 `inbound`（建单前发出、没有 `task_id`）只留在内存里，**不落盘**——回放是按 `task_id` 挑行的，无主行配不上任何一次对话。`logs/` 已进 `.gitignore`（含候选人姓名，不要提交）。
+- 评测：`evals/runs/<run_id>/events.jsonl`，同时进 `summary.json` 的 `events` / `tool_calls` / `seams_seen`。
+- 直接 grep：`grep '"seam":"db_commit"' logs/trajectories/<task_id>.jsonl`。
+
+`reply.claims_success` 在 P3 期恒为 `false`（`booked` 尚未 verify），`claim_kind=committed` 才代表真的落了库；看到「预约成功」字样但 `claims_success=false` 是预期的、可 grep 的诚实标记。
+
+## 怎么回放
+
+```bash
+python tools/replay_trajectory.py --task-id <task_id>                      # 默认读 logs/trajectories/
+python tools/replay_trajectory.py --task-id <task_id> --events evals/runs/<run_id>/events.jsonl
+python tools/replay_trajectory.py --task-id <task_id> --format json --strict
+```
+
+- 输出：`--format text` 一行一事件（`HH:MM:SS.mmm  seam  要点`）；`--format json` 给 `{"task_id","event_count","seams","ordered","warnings"}`。
+- 退出码：`0` 成功；`2` 输入缺失 / 找不到该 task / `--strict` 未通过。
+- `--strict` 检查：① 六缝齐全（熔断轨迹例外：`classify.step_limit_hit=true` 且无 `tool_call`）；② 每条 `tool_call` 与 `tool_result` 按 `(tool, step)` 一对一，孤儿 `tool_result` 失败；③ `db_commit` 之前必须有成功的 `tool_result`（`reason=step_limit` 例外）；④ `task_id` 为空只允许首行；⑤ `claims_success=true` 必须有 verify 证据，否则失败；⑥ `source=feishu` 必须验签。
+- 脚本只依赖标准库，可在任意目录对 JSONL 文件直接跑。

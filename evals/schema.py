@@ -22,11 +22,27 @@ CASE_KINDS = ("service", "dialogue")
 BASE_TAGS = ("capability", "regression")
 REPLY_CLASSES = (
     "success", "clarification", "conflict", "not_found", "no_match", "decline", "recommendation", "failed", "none",
+    # P3 §9.2 新增分支：工具层硬拒的过去时间 / 干跑（只预检、不落库）
+    "time_past", "dry_run",
 )
-ACTION_OPS = ("book", "cancel", "find")
+ACTION_OPS = ("book", "cancel", "find", "reschedule")
 PENDING_PREFIX = "pending:"
 LIVE_TAGS = ("live", "feishu")
 REQUIRED_KEYS = ("case_id", "dataset_version", "kind", "tags", "coverage", "expected_db")
+
+# P3 §4.1：六缝。v2 的 dialogue 用例用 `expected_seams` 声明，必须覆盖全部六缝
+# （缺一条就会漏掉一类事件，`missing_seam` 才有意义）。
+SEAM_NAMES = ("inbound", "classify", "tool_call", "tool_result", "db_commit", "reply")
+# P3 §3.9 `ToolErrorCode` 的取值域（结构化码，不是自然语言）
+TOOL_ERROR_CODES = (
+    "past_time", "conflict", "not_found", "no_match", "invalid_arguments", "task_terminal",
+    "needs_task", "illegal_transition", "step_limit", "old_release_failed",
+    "manual_intervention", "unavailable_upstream",
+)
+# P3 §4.2.1 `claim_kind` 的取值域
+CLAIM_KINDS = ("committed", "success", "refused", "needs_input", "failed")
+# P3 §9.3：`expected_db.tasks` 的键（不写 `task_id`——自增/随机，同 interviews.id 的禁令）
+TASK_EXPECTATION_KEYS = ("status", "interview_linked", "new_rows", "rows")
 
 
 class CaseError(ValueError):
@@ -34,13 +50,22 @@ class CaseError(ValueError):
 
 
 def parse_local_time(value: str) -> datetime:
-    """把用例里的北京时间「YYYY-MM-DD HH:MM」解析成 aware datetime。"""
+    """把用例里的北京时间「YYYY-MM-DD HH:MM」解析成 aware datetime。
+
+    P3 起 `dataset.json` 的 `reference_now` 允许写带偏移的 ISO 串（P1 spec §3.1 的写法），
+    带偏移时按其偏移解析，不再当成本地时间。
+    """
     if not isinstance(value, str):
         raise CaseError(f"时间必须是字符串：{value!r}")
+    text = value.strip()
     try:
-        naive = datetime.strptime(value.strip(), TIME_FORMAT)
-    except ValueError as exc:
-        raise CaseError(f"时间格式应为 {TIME_FORMAT}：{value!r}") from exc
+        naive = datetime.strptime(text, TIME_FORMAT)
+    except ValueError:
+        try:
+            aware = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise CaseError(f"时间格式应为 {TIME_FORMAT} 或 ISO 8601：{value!r}") from exc
+        return aware if aware.tzinfo is not None else aware.replace(tzinfo=BEIJING_TZ)
     return naive.replace(tzinfo=BEIJING_TZ)
 
 
@@ -132,6 +157,7 @@ def validate_case(raw: Any, index: int, source_file: str) -> Case:
     if not isinstance(expected_db, dict):
         raise CaseError(f"{source_file}#{index}: expected_db 必须是对象")
     _validate_expected_db(expected_db, source_file, index)
+    _validate_tool_assertions(raw, source_file, index)
 
     reply_class = raw.get("expected_reply_class", "none")
     if reply_class not in REPLY_CLASSES:
@@ -152,6 +178,8 @@ def validate_case(raw: Any, index: int, source_file: str) -> Case:
         for action in raw["actions"]:
             if not isinstance(action, dict) or action.get("op") not in ACTION_OPS:
                 raise CaseError(f"{source_file}#{index}: action.op 只能是 {ACTION_OPS}")
+            if "dry_run" in action and not isinstance(action["dry_run"], bool):
+                raise CaseError(f"{source_file}#{index}: action.dry_run 必须是布尔")
 
     for busy in (raw.get("pre_conditions") or {}).get("busy") or []:
         parse_local_time(busy.get("start"))
@@ -214,10 +242,18 @@ def _validate_expected_db(expected_db: Dict[str, Any], source_file: str, index: 
         raise CaseError(f"{source_file}#{index}: expected_db.behaviors 必须是整数")
 
     # P2 预留：`tasks`（可选）。P1 数据集不写这一段，校验与断言都完全不变。
+    # P3 §9.3：`status` / `interview_linked` / `new_rows` 三键与 P2 的 `count` / `statuses` 互斥，
+    # 混写说明用例作者没想清楚要断言哪一套。
     if "tasks" in expected_db:
         tasks = expected_db["tasks"]
         if not isinstance(tasks, dict):
             raise CaseError(f"{source_file}#{index}: expected_db.tasks 必须是对象")
+        # §9.3：三键（另有确认轮换单用的 `rows`）与 P2 的 count/statuses 互斥。
+        if not set(tasks) or not set(tasks) <= {"count", "statuses"}:
+            if set(tasks) & {"count", "statuses"}:
+                raise CaseError(f"{source_file}#{index}: expected_db.tasks 不能同时写 count/statuses 与 P3 三键")
+            _validate_task_expectation(tasks, source_file, index)
+            return
         unknown = set(tasks) - {"count", "statuses"}
         if unknown:
             raise CaseError(f"{source_file}#{index}: expected_db.tasks 只允许 count/statuses，多出 {sorted(unknown)}")
@@ -233,6 +269,88 @@ def _validate_expected_db(expected_db: Dict[str, Any], source_file: str, index: 
             bad = set(statuses) - allowed
             if bad:
                 raise CaseError(f"{source_file}#{index}: expected_db.tasks.statuses 含非法状态 {sorted(bad)}")
+
+
+def _validate_task_expectation(tasks: Any, source_file: str, index: int) -> None:
+    """P3 §9.3：`{"status", "interview_linked", "new_rows"}`，三键都可选但至少一个。"""
+    if not isinstance(tasks, dict):
+        raise CaseError(f"{source_file}#{index}: expected_db.tasks 必须是对象")
+    unknown = set(tasks) - set(TASK_EXPECTATION_KEYS)
+    if unknown:
+        raise CaseError(
+            f"{source_file}#{index}: expected_db.tasks 只允许 {list(TASK_EXPECTATION_KEYS)}，多出 {sorted(unknown)}"
+            "（禁止断言 task_id：自增/随机）"
+        )
+    if not tasks:
+        raise CaseError(f"{source_file}#{index}: expected_db.tasks 至少要断言一个键")
+    if "status" in tasks:
+        allowed = set(_load_transitions().ACTIVE_STATUS)
+        if tasks["status"] not in allowed:
+            raise CaseError(f"{source_file}#{index}: expected_db.tasks.status 只能是 {sorted(allowed)}")
+    if "interview_linked" in tasks and not isinstance(tasks["interview_linked"], bool):
+        raise CaseError(f"{source_file}#{index}: expected_db.tasks.interview_linked 必须是布尔")
+    if "new_rows" in tasks:
+        value = tasks["new_rows"]
+        # bool 是 int 的子类：`True` 不能冒充 1
+        # §9.3 写的是 0|1；推荐→确认轮按 P2-D4 换单（旧单 cancelled + 新单 booked）会新增 2 行
+        if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1, 2):
+            raise CaseError(f"{source_file}#{index}: expected_db.tasks.new_rows 只能是 0/1/2（2 = 确认轮换单）")
+        # 只说「新增 2 行」而不说哪两行无法验证换单形态，必须用 `rows` 展开
+        if value == 2 and "rows" not in tasks:
+            raise CaseError(f"{source_file}#{index}: tasks.new_rows=2 必须同时给 tasks.rows（确认轮换单的两行）")
+    if "rows" in tasks:
+        rows = tasks["rows"]
+        if not isinstance(rows, list) or not rows or not all(isinstance(row, dict) for row in rows):
+            raise CaseError(f"{source_file}#{index}: expected_db.tasks.rows 必须是非空对象数组")
+        allowed = set(_load_transitions().ACTIVE_STATUS)
+        for row in rows:
+            unknown = set(row) - {"status", "interview_linked"}
+            if unknown:
+                raise CaseError(f"{source_file}#{index}: tasks.rows 只允许 status/interview_linked，多出 {sorted(unknown)}")
+            if row.get("status") not in allowed:
+                raise CaseError(f"{source_file}#{index}: tasks.rows.status 非法：{row.get('status')!r}")
+            if not isinstance(row.get("interview_linked"), bool):
+                raise CaseError(f"{source_file}#{index}: tasks.rows.interview_linked 必须是布尔")
+        if "new_rows" in tasks and tasks["new_rows"] != len(rows):
+            raise CaseError(f"{source_file}#{index}: tasks.new_rows={tasks['new_rows']} 与 rows 行数 {len(rows)} 不一致")
+
+
+def _validate_tool_assertions(raw: Dict[str, Any], source_file: str, index: int) -> None:
+    """P3 §9.3 新顶层断言键（均可选；v1 数据集一条都不写，校验路径不变）。"""
+    if "expected_tool_error" in raw and raw["expected_tool_error"] not in TOOL_ERROR_CODES:
+        raise CaseError(
+            f"{source_file}#{index}: expected_tool_error 只能是 {list(TOOL_ERROR_CODES)}，"
+            f"得到 {raw['expected_tool_error']!r}"
+        )
+    for key in ("expected_tool_ok", "expected_tool_replay"):
+        if key not in raw:
+            continue
+        value = raw[key]
+        if not isinstance(value, list) or not value or not all(isinstance(item, bool) for item in value):
+            raise CaseError(f"{source_file}#{index}: {key} 必须是非空的布尔数组")
+    if "expected_seams" in raw:
+        seams = raw["expected_seams"]
+        if not isinstance(seams, list) or not all(isinstance(item, str) for item in seams):
+            raise CaseError(f"{source_file}#{index}: expected_seams 必须是字符串数组")
+        unknown = set(seams) - set(SEAM_NAMES)
+        if unknown:
+            raise CaseError(f"{source_file}#{index}: expected_seams 含未知缝 {sorted(unknown)}")
+        # 至少含「决策」与「答复」两缝；写库用例（expected_db 断言了 booked）必须再含 db_commit
+        required = {"classify", "reply"}
+        if any(row.get("status") == "booked" for row in (raw.get("expected_db") or {}).get("interviews") or []):
+            required.add("db_commit")
+        missing = required - set(seams)
+        if missing:
+            raise CaseError(f"{source_file}#{index}: expected_seams 缺必需缝 {sorted(missing)}")
+    if "expected_claim_kind" in raw and raw["expected_claim_kind"] not in CLAIM_KINDS:
+        raise CaseError(
+            f"{source_file}#{index}: expected_claim_kind 只能是 {list(CLAIM_KINDS)}，"
+            f"得到 {raw['expected_claim_kind']!r}"
+        )
+    if "expected_tool_error_turn" in raw:
+        turn = raw["expected_tool_error_turn"]
+        if isinstance(turn, bool) or not isinstance(turn, int) or turn < 1:
+            raise CaseError(f"{source_file}#{index}: expected_tool_error_turn 必须是 ≥1 的整数")
 
 
 @dataclass

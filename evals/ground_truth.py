@@ -27,7 +27,16 @@ FAILURE_CODES = (
     "wrong_reply_class",
     "wrong_behavior_count",
     "state_leak",
+    # P3 §9.3
+    "task_mismatch",
+    "wrong_tool_error",
+    "wrong_idempotency",
+    "missing_seam",
+    "wrong_claim_kind",
 )
+
+# 工具结果断言只看这些写工具（`find_interviewer` / `list_available` 是只读的，不参与 ok/replay 序列）
+_WRITE_TOOLS = ("book_interview", "cancel", "reschedule")
 
 
 @dataclass
@@ -79,12 +88,15 @@ class DbSnapshot:
         rows = session.query(AppointmentTask).order_by(AppointmentTask.created_at).all()
         return [
             {
+                "task_id": row.task_id,
                 "status": row.status,
                 "reason": row.reason,
                 "cancel_actor": row.cancel_actor,
                 "last_error_code": row.last_error_code,
                 "committed": row.committed_at is not None,
                 "verified": row.verified_at is not None,
+                "interview_id": row.interview_id,
+                "interview_linked": row.interview_id is not None,
             }
             for row in rows
         ]
@@ -147,10 +159,74 @@ def _evaluate_tasks(expected: Dict[str, Any], before: List[Dict[str, Any]],
             result.fail("wrong_task_status", f"新增工单状态期望 {want}，实际 {got}")
 
 
-def evaluate(expected_db: Dict[str, Any], baseline: Dict[str, Any], observed: Dict[str, Any]) -> AssertionResult:
+def _task_row_key(row: Dict[str, Any]) -> Dict[str, Any]:
+    """失败报告里指向具体 task 行：只带可读字段，不带 created_at 一类的时间戳。"""
+    return {key: row.get(key) for key in ("task_id", "status", "interview_linked", "interview_id", "last_error_code")}
+
+
+def _evaluate_task_expectation(expected: Dict[str, Any], before: List[Dict[str, Any]],
+                               after: List[Dict[str, Any]], result: AssertionResult) -> None:
+    """P3 §9.3：按 `task_id` 集合差集定位新增/变化的工单行。
+
+    - `new_rows`：新增行数必须恰为它；
+    - `status`：新增行（没有新增时取全部行）的状态必须都是它；
+    - `interview_linked`：新增行的 `interview_id` 是否非空。
+    detail 直接给出差集里的 task 行，失败报告能指到「哪一行不一样」。
+    """
+    before_ids = {row.get("task_id") for row in before}
+    added = [row for row in after if row.get("task_id") not in before_ids]
+    detail_added = [_task_row_key(row) for row in added]
+
+    if "new_rows" in expected and len(added) != expected["new_rows"]:
+        result.fail(
+            "task_mismatch",
+            f"新增工单期望 {expected['new_rows']} 行，实际 {len(added)} 行；新增行={detail_added}；"
+            f"运行前={[_task_row_key(row) for row in before]}",
+        )
+
+    scope = added or list(after)
+    if "status" in expected:
+        bad = [row for row in scope if row.get("status") != expected["status"]]
+        if bad:
+            result.fail(
+                "task_mismatch",
+                f"工单状态期望 {expected['status']}，不符的行={[_task_row_key(row) for row in bad]}"
+                f"（新增行={detail_added}）",
+            )
+    if "rows" in expected:
+        # 多行用例（确认轮换单）：新增行的 (status, interview_linked) 多重集合必须一致
+        def _shape(row):
+            return (row.get("status"), bool(row.get("interview_id") is not None))
+        got = sorted(_shape(row) for row in added)
+        want = sorted((row.get("status"), row.get("interview_linked")) for row in expected["rows"])
+        if got != want:
+            result.fail(
+                "task_mismatch",
+                f"新增工单行期望 {want}，实际 {got}；新增行={detail_added}",
+            )
+    if "interview_linked" in expected:
+        bad = [row for row in scope if bool(row.get("interview_id") is not None) != expected["interview_linked"]]
+        if bad:
+            result.fail(
+                "task_mismatch",
+                f"工单 interview_linked 期望 {expected['interview_linked']}，不符的行={[_task_row_key(row) for row in bad]}",
+            )
+
+
+def evaluate(expected_db: Dict[str, Any], baseline: Dict[str, Any], observed: Dict[str, Any],
+             events: Optional[List[Any]] = None,
+             *,
+             expected_tool_error: Optional[str] = None,
+             expected_tool_ok: Optional[List[bool]] = None,
+             expected_tool_replay: Optional[List[bool]] = None,
+             expected_seams: Optional[List[str]] = None,
+             expected_claim_kind: Optional[str] = None,
+             expected_tool_error_turn: Optional[int] = None) -> AssertionResult:
     """
     baseline：case 开始前（seed + pre_conditions 之后）的快照。
     observed：case 结束后的快照。
+    events：本 case 的 `ToolEvent`（`ToolEvent` 对象或 `as_dict()` 形态的 dict），用于
+        `expected_tool_*` / `expected_seams` / `expected_claim_kind` 断言；不给时这几项跳过。
     """
     result = AssertionResult(ok=True)
     expected_rows = expected_db.get("interviews", [])
@@ -224,7 +300,22 @@ def evaluate(expected_db: Dict[str, Any], baseline: Dict[str, Any], observed: Di
         result.fail("wrong_schedule", f"free 增量期望 {schedules['free_delta']}，实际 {free_after - free_before}")
 
     if "tasks" in expected_db:
-        _evaluate_tasks(expected_db["tasks"], baseline.get("tasks", []), observed.get("tasks", []), result)
+        tasks = expected_db["tasks"]
+        if set(tasks) & {"status", "interview_linked", "new_rows"}:
+            _evaluate_task_expectation(tasks, baseline.get("tasks", []), observed.get("tasks", []), result)
+        else:
+            _evaluate_tasks(tasks, baseline.get("tasks", []), observed.get("tasks", []), result)
+
+    if events is not None:
+        _evaluate_events(
+            events, result,
+            expected_tool_error=expected_tool_error,
+            expected_tool_ok=expected_tool_ok,
+            expected_tool_replay=expected_tool_replay,
+            expected_seams=expected_seams,
+            expected_claim_kind=expected_claim_kind,
+            expected_tool_error_turn=expected_tool_error_turn,
+        )
 
     if "behaviors" in expected_db:
         behavior_delta = observed["behaviors"] - baseline["behaviors"]
@@ -248,6 +339,72 @@ def evaluate(expected_db: Dict[str, Any], baseline: Dict[str, Any], observed: Di
         result.fail("state_leak", f"有 {len(orphans)} 条新增日程没有对应的新增预约:{[r['interview_id'] for r in orphans]}")
 
     return result
+
+
+def _evaluate_events(events: List[Any], result: AssertionResult, *,
+                     expected_tool_error: Optional[str],
+                     expected_tool_ok: Optional[List[bool]],
+                     expected_tool_replay: Optional[List[bool]],
+                     expected_seams: Optional[List[str]],
+                     expected_claim_kind: Optional[str],
+                     expected_tool_error_turn: Optional[int]) -> None:
+    """P3 §9.3：从事件流里取工具级 / 缝级 / 回复级事实（不解析话术文本）。"""
+    rows = [event if isinstance(event, dict) else event.as_dict() for event in events]
+    tool_calls = [row for row in rows if row.get("seam") == "tool_call"]
+    tool_results = [row for row in rows if row.get("seam") == "tool_result"]
+    replies = [row for row in rows if row.get("seam") == "reply"]
+    seams_seen = sorted({row.get("seam") for row in rows if row.get("seam")})
+
+    writes = [
+        row["payload"] for row in tool_results
+        if isinstance(row.get("payload"), dict) and row["payload"].get("tool") in _WRITE_TOOLS
+    ]
+    result.observed["tool_results"] = writes
+    result.observed["seams_seen"] = seams_seen
+    result.observed["replies"] = [row.get("payload", {}) for row in replies]
+
+    if expected_seams is not None:
+        missing = [seam for seam in expected_seams if seam not in seams_seen]
+        if missing:
+            result.fail("missing_seam", f"缺少缝 {missing}；实际出现的缝={seams_seen}（共 {len(rows)} 条事件）")
+
+    errors = sorted({row["payload"].get("error_code") for row in tool_results
+                     if isinstance(row.get("payload"), dict) and row["payload"].get("error_code")})
+    if expected_tool_error is not None and expected_tool_error not in errors:
+        detail = f"工具错误码期望出现 {expected_tool_error}，实际={errors or '无'}"
+        if expected_tool_error_turn is not None and 0 < expected_tool_error_turn <= len(tool_calls):
+            turn_call = tool_calls[expected_tool_error_turn - 1]["payload"]
+            detail += f"；第 {expected_tool_error_turn} 次工具调用的参数={turn_call.get('args')}"
+        result.fail("wrong_tool_error", detail)
+
+    write_oks = [bool(row.get("ok")) for row in writes]
+    if expected_tool_ok is not None and write_oks != list(expected_tool_ok):
+        result.fail(
+            "wrong_tool_error",
+            f"写工具 ok 序列期望 {list(expected_tool_ok)}，实际 {write_oks}；"
+            f"结果={[(row.get('tool'), row.get('ok'), row.get('error_code')) for row in writes]}",
+        )
+
+    if expected_tool_replay is not None:
+        replays = [
+            bool((row.get("data") or {}).get("idempotent_replay", (row.get("data") or {}).get("replay", False)))
+            for row in writes
+        ]
+        if replays != list(expected_tool_replay):
+            result.fail("wrong_idempotency", f"写工具幂等重放序列期望 {list(expected_tool_replay)}，实际 {replays}")
+
+    if expected_claim_kind is not None:
+        # 硬断言（§9.3）：出现别的 claim_kind 即失败，不是 warn
+        kinds = [row.get("payload", {}).get("claim_kind") for row in replies]
+        claimed = [bool(row.get("payload", {}).get("claims_success")) for row in replies]
+        # 断言对象是**末轮** reply（§4.2.1：每条 reply 独立判定，末轮才是本轮结论）
+        if not replies:
+            result.fail("wrong_claim_kind", f"期望 claim_kind={expected_claim_kind}，但没有任何 reply 事件")
+        elif kinds[-1] != expected_claim_kind:
+            result.fail("wrong_claim_kind", f"末轮期望 claim_kind={expected_claim_kind}，实际 {kinds}")
+        elif expected_claim_kind == "committed" and claimed[-1]:
+            # P3 过渡断言：`committed` 期间话术不得宣称成功（§4.2.1）
+            result.fail("wrong_claim_kind", f"claim_kind=committed 时 claims_success 必须为 false，实际 {claimed[-1]}")
 
 
 def before_schedules(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:

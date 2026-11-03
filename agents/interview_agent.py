@@ -16,6 +16,13 @@ load_dotenv()
 _CHATS_BY_SESSION: dict = {}
 
 
+def _default_clock():
+    """默认时钟：`config.time_config.TimeConfig.now`（aware 北京时间，P5 唯一切换点）。"""
+    from config.time_config import TimeConfig
+
+    return TimeConfig.now()
+
+
 class InterviewAgent:
     """
     面试预约机器人主控制器
@@ -32,7 +39,8 @@ class InterviewAgent:
     """
 
     def __init__(self, session_id=None, unrelated_callback=None, *, task_service=None,
-                 interview_service=None, interview_db=None, llm=None, task_id=None):
+                 interview_service=None, interview_db=None, llm=None, task_id=None,
+                 deps=None, sink=None, clock=None, source="web", logs_dir=None):
         # 基础设置
         self.session_id = session_id or str(uuid.uuid4())
         self.unrelated_callback = unrelated_callback
@@ -41,6 +49,17 @@ class InterviewAgent:
         # P2：工单服务（None → legacy 路径，与 P1 行为一致）
         self.task_service = task_service
         self.task_id = None
+
+        # ---- P3：六缝（§6.3 / §7.1.1）----
+        # `deps` 显式给出的 sink 优先；否则用注入的 `sink`；再否则在**第一次 emit 时**
+        # 惰性建 `JSONLSink(logs_dir | logs/trajectories)`——构造期绝不建目录（P2 不触盘不变量）。
+        self.source = source
+        self.clock = clock
+        self.logs_dir = logs_dir
+        self._deps = deps
+        self._sink = deps.sink if (deps is not None and getattr(deps, "sink", None) is not None) \
+            else sink
+        self._emitter = None
 
         # 惰性组件（注入优先）
         self._llm = llm
@@ -61,6 +80,105 @@ class InterviewAgent:
 
         if task_service is not None:
             self._restore_task(task_id)
+
+    # ------------------------------------------------------------------
+    # 六缝：sink / emitter / ToolDeps（全部惰性）
+    # ------------------------------------------------------------------
+
+    @property
+    def emitter(self):
+        """全局发缝器：未注入时用 `NullSink`（**不**建文件）；`set_sink`/首次 emit 时替换。"""
+        if self._emitter is None:
+            from agents.observability import EventEmitter
+
+            self._emitter = EventEmitter(source=self.source, clock=self.clock,
+                                         session_id=self.session_id)
+        return self._emitter
+
+    @emitter.setter
+    def emitter(self, value):
+        self._emitter = value
+
+    @property
+    def sink(self):
+        """轨迹 sink：显式注入优先；否则**第一次用时**建 `JSONLSink(<logs_dir>/<task>.jsonl)`。"""
+        if self._sink is None:
+            from agents.observability import JSONLSink, NullSink
+
+            if self.task_service is None and self.deps is None:
+                return NullSink()      # legacy / 无工单：不写盘（构造与首轮都不建 logs/）
+            # §8 回放按 `task_id` 挑行；入口 `inbound` 建单前发出、task_id 恒 None，
+            # 若也落 `_unassigned.jsonl`，那些行永远配不上任何 task，还会被默认扫描读成
+            # 「外部输入」。故：无 task 的事件只进内存 sink，不落盘（评测的 events.jsonl
+            # 是单文件模式，不走这里，入口行照常保留）。
+            self._sink = JSONLSink(self._logs_dir(), hold_unassigned=True)
+        return self._sink
+
+    @sink.setter
+    def sink(self, value):
+        self._sink = value
+
+    def _logs_dir(self):
+        from pathlib import Path
+
+        return Path(self.logs_dir) if self.logs_dir is not None else \
+            Path("logs") / "trajectories"
+
+    def _inbound_ts(self):
+        """入口行时间戳：`clock() - 1ms`（见 `run_stream` 的说明）。"""
+        from datetime import timedelta
+
+        try:
+            return self.clock() - timedelta(milliseconds=1)
+        except Exception:
+            return None
+
+    def _emit_inbound(self, text) -> None:
+        """`run_stream` 第一件事：`inbound`（P7 字段存在且为 None，§4.2）。"""
+        try:
+            emitter = self.emitter
+            if type(emitter.sink).__name__ == "NullSink":
+                emitter.sink = self.sink      # 未注入 sink → 首次 emit 才落到 JSONLSink
+            if hasattr(emitter, "bind"):
+                emitter.bind(session_id=self.session_id)
+            emitter.inbound(text if isinstance(text, str) else str(text),
+                            session_id=self.session_id, task_id=None, ts=self._inbound_ts())
+        except Exception as exc:  # 缝失败不阻断业务
+            print(f"[warn] inbound 缝写入失败：{exc}")
+
+    @property
+    def deps(self):
+        """Worker 的 `ToolDeps`（§3.1）：`task_service` 在场时才建，且**惰性**。
+
+        - `clock` 默认 `config.time_config.TimeConfig.now`（P5 唯一注入点）；
+        - `source="web"`；`task_id` 取当前绑定的工单；
+        - 没有 `task_service` → 返回 None（legacy 路径，Processor 走 P1/P2 行为）。
+        """
+        if self._deps is None:
+            if self.task_service is None:
+                return None
+            from agents.tools.deps import ToolDeps
+
+            self._deps = ToolDeps(
+                task_service=self.task_service,
+                interview_service=self._interview_service,
+                # 注：此处不建 `InterviewService`（构造 ≠ 连接）；需要只读查询时由装配方注入
+                finder=self._interviewer_finder,
+                behavior_service=getattr(self.task_service, "behavior_service", None),
+                session_id=self.session_id,
+                task_id=self.task_id,
+                sink=self.sink,
+                clock=self.clock or _default_clock,
+                source=self.source,
+            )
+        return self._deps
+
+    def _worker_deps(self):
+        """每轮把 `task_id` 同步到 deps（换单后以 Processor 为准）。"""
+        deps = self.deps
+        if deps is not None and hasattr(deps, "with_task"):
+            return deps.with_task(self.task_id) if deps.task_id != self.task_id else deps
+        return deps
 
     # ------------------------------------------------------------------
     # 惰性组件
@@ -99,14 +217,27 @@ class InterviewAgent:
     @property
     def interview_processor(self):
         if self._interview_processor is None:
-            self._interview_processor = InterviewProcessor(
-                self.input_parser,
-                self.interviewer_finder,
-                self.message_builder,
-                self.interview_database,
-                self.llm,
-                task_service=self.task_service,
-            )
+            deps = self._worker_deps()
+            if deps is not None:
+                # P3 主路径：book 只经 registry.call（G3）。
+                # 不在这里拉 `self.llm`：处理器只把 llm 透传给话术生成，LLM 仍惰性（§7.1）
+                self._interview_processor = InterviewProcessor(
+                    self.input_parser,
+                    self.interviewer_finder,
+                    self.message_builder,
+                    None,
+                    self._llm,
+                    deps=deps,
+                )
+            else:
+                self._interview_processor = InterviewProcessor(
+                    self.input_parser,
+                    self.interviewer_finder,
+                    self.message_builder,
+                    self.interview_database,
+                    self.llm,
+                    task_service=self.task_service,
+                )
         return self._interview_processor
 
     def _initialize_llm(self):
@@ -170,9 +301,21 @@ class InterviewAgent:
         """首轮建单：`chat:<session_id>:<seq>`，`seq` 从已落库的键反解（重启可续）。
 
         只记 id（以及在有 Processor 时与之对齐），**不**为了绑定去构建 Processor——
-        否则构造/首轮会把 LLM 拉起来（§7.1）。绑定点在 `run_stream` 里按需一次。
+                        否则构造/首轮会把 LLM 拉起来（§7.1）。绑定点在 `run_stream` 里按需一次。
+
+        只在**没有可推进的在途工单**时建新单。「一次对话 = 一张工单」：上一轮把单推到
+        `awaiting_confirm` 却还没落库（例如推荐已发出、候选人接着说「时间改 14 点」）时，
+        再建一张新单会让后续 `book_interview` 带着新单的幂等键去调 `book_task`，
+        被 P2 的「键 ↔ task」自检拒成 `task_not_found`——业务上表现为「明明有档期，一直提示
+        预约失败」。此时沿用那张在途单。
         """
         if self.task_service is None or self.task_id:
+            return
+        open_task = self._open_task()
+        if open_task is not None:
+            self.task_id = open_task.task_id
+            if self._interview_processor is not None:
+                self._interview_processor.bind_task(open_task.task_id)
             return
         seq = self.task_service.next_chat_seq(self.session_id)
         candidate = (self.interview_history.get("candidate_name") or "").strip()
@@ -182,6 +325,21 @@ class InterviewAgent:
         self.task_id = task.task_id
         if self._interview_processor is not None:
             self._interview_processor.bind_task(task.task_id)
+
+    # 未终结、还能继续推进的工单状态（与 harness `_next_reusable_task` 同口径）
+    OPEN_TASK_STATUS = ("collecting", "matching", "awaiting_confirm")
+
+    def _open_task(self):
+        """本会话最新的可推进工单（`collecting` / `matching` / `awaiting_confirm`），没有返回 None。"""
+        if self.task_service is None or not hasattr(self.task_service, "list_tasks_by_session"):
+            return None
+        try:
+            tasks = self.task_service.list_tasks_by_session(self.session_id)
+        except Exception as exc:  # 读不到就当没有：退回建新单，不阻断业务
+            print(f"[warn] 读取在途工单失败：{exc}")
+            return None
+        return next((task for task in reversed(list(tasks or []))
+                     if getattr(task, "status", None) in self.OPEN_TASK_STATUS), None)
 
     def _restore_history_if_needed(self):
         """重启后把库里的槽位回放进会话历史（§7.2）。
@@ -238,7 +396,11 @@ class InterviewAgent:
             "recommended_interviewer": None,
             "original_interviewer": None,
             "awaiting_confirmation": False,
-            "recommendation_declined": False
+            "recommendation_declined": False,
+            # 幂等键是**派生值**（绑定哪张单就是哪张单的键），绝不跨 reset 存活：
+            # 会话历史跨轮复用，缓存键过了它的工单会把下一次预约带错单
+            # （见 Processor._sync_history_to_bound_task）
+            "client_request_id": None,
         }
         self.finished = False
         self.chat_history.clear()
@@ -255,12 +417,19 @@ class InterviewAgent:
         """
         if user_input is None:
             user_input = input("候选人：")
+        # 第一件事：inbound 缝（§4.2）。入口必然先于建单，故必须**就地**发（不能推迟），且
+        # 时间戳要严格早于后续事件：`event_id` = 同毫秒时钟 + 随机后缀，同毫秒内 `(ts, event_id)`
+        # 排序不代表写入顺序，回放会把入口行排到中间。故用 `clock() - 1ms` 钉住「入口在前」。
+        self._emit_inbound(user_input)
 
         # 1. 解析候选人输入（内部 JSON，不向用户流式输出，避免英文字段名暴露在聊天界面）
         ai_content = ""
         try:
             self._restore_history_if_needed()
-            for token in self.input_parser.parse_stream(user_input, self.chat_history):
+            # 注入的 parser 可能就是处理器自身（`input_parser=`，测试替身按接口注入）；用实例属性
+            # 时由调用方另行赋值 `_input_parser`，两者的优先级以 `_input_parser` 为准
+            parser = self._input_parser if self._input_parser is not None else self.input_parser
+            for token in parser.parse_stream(user_input, self.chat_history):
                 ai_content += token
             self._ensure_task()
         except Exception as e:
@@ -270,7 +439,8 @@ class InterviewAgent:
 
         try:
             # 2. 解析AI返回的数据
-            data = self.input_parser.parse_data(ai_content)
+            parser = self._input_parser if self._input_parser is not None else self.input_parser
+            data = parser.parse_data(ai_content)
             self.finished = self.interview_processor.update_history_from_data(
                 self.interview_history, data
             )
@@ -289,6 +459,13 @@ class InterviewAgent:
                 ):
                     yield token
                 return
+
+            # Router 轮的 classify 写在建单前：建单后补 `task_id_backfilled`（§4.1）
+            if self.task_id:
+                try:
+                    self.emitter.backfill(self.task_id)
+                except Exception as exc:  # 缝失败不阻断业务
+                    print(f"[warn] classify backfill 失败：{exc}")
 
             if self.task_id and not self._task_bound:
                 # 第一次真正跑业务时才构建 Processor，并把（构造期恢复的）task_id 绑上去。

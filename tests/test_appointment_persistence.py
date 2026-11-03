@@ -25,12 +25,16 @@ _STEP_SRC = textwrap.dedent("""
 """).rstrip()
 
 PRELUDE = """
-import asyncio, json, sys
+import asyncio, json, sys, tempfile
 from db.db_router import DatabaseRouter
 from services.appointment_task_service import AppointmentTaskService
 from agents.interview_agent import InterviewAgent
 from agents.interview.input_parser import InputParser
 from agents.interview.message_builder import MessageBuilder
+
+# P3：Agent 有工单时会写六缝轨迹。默认落 `logs/trajectories/`，会把测试行留进仓库
+# （`_unassigned.jsonl` 随后被回放测试当作外部输入）。子进程里改指临时目录。
+TRAJ_DIR = tempfile.mkdtemp(prefix="cairn-traj-")
 
 DB_URL = "sqlite:///{db_path}"
 SLOTS = json.loads({slots!r})
@@ -96,7 +100,7 @@ def _boot(db_path: str, payload: dict, is_first: bool = False) -> str:
         # 若先构造 Agent 再建单，缓存的 chat_history 会让第二次构造拿到旧的会话历史。
         target = svc.recover("s1")
         assert target is not None, "首次启动后应有可恢复的工单"
-        agent = InterviewAgent(session_id="s1", task_service=svc)
+        agent = InterviewAgent(session_id="s1", task_service=svc, logs_dir=TRAJ_DIR)
         assert agent.task_id == target.task_id
 
         agent._input_parser = Parser(SLOTS)
@@ -141,7 +145,7 @@ from sqlalchemy import text
 from services.appointment_task_service import AppointmentTaskService
 from db.db_router import DatabaseRouter
 svc2 = AppointmentTaskService(db_router=DatabaseRouter(DB_URL))
-agent2 = InterviewAgent(session_id="s1", task_service=svc2)
+agent2 = InterviewAgent(session_id="s1", task_service=svc2, logs_dir=TRAJ_DIR)
 task = svc2.get_task(agent2.task_id)
 with svc2._db_router.session_manager.session_scope() as s:
     interviews = s.execute(text("SELECT COUNT(*) FROM interviews")).scalar()
@@ -203,7 +207,8 @@ else:
     svc2.cancel_task({tid!r}, actor="candidate")
 print("RESULT" + json.dumps({{"recovered": svc2.recover("s1") is not None,
                              "agent_task_id": InterviewAgent(
-                                 session_id="s1", task_service=svc2).task_id}}))
+                                 session_id="s1", task_service=svc2,
+                                 logs_dir=TRAJ_DIR).task_id}}))
 """.format(endpoint=endpoint, tid=created["task_id"])
             out = _result(_run(_boot(str(db), PAYLOAD) + probe_src))
             assert out["recovered"] is False, endpoint
@@ -241,7 +246,7 @@ class TestNoTouchConstruction:
 
 
 @pytest.mark.parametrize("bad_status", ["failed", "cancelled"])
-def test_agent_does_not_resume_terminal_task(temp_db_path, bad_status):
+def test_agent_does_not_resume_terminal_task(temp_db_path, bad_status, tmp_path):
     from agents.interview_agent import InterviewAgent
     from db.db_router import DatabaseRouter
     from services.appointment_task_service import AppointmentTaskService
@@ -254,7 +259,7 @@ def test_agent_does_not_resume_terminal_task(temp_db_path, bad_status):
             assert svc.mark_failed(task.task_id, "no_slot", "no_slot")["ok"] is True
         else:
             assert svc.cancel_task(task.task_id, actor="candidate")["ok"] is True
-        agent = InterviewAgent(session_id="s1", task_service=svc)
+        agent = InterviewAgent(session_id="s1", task_service=svc, logs_dir=tmp_path / "traj")
         assert agent.task_id is None
         assert svc.recover("s1") is None
     finally:

@@ -105,6 +105,9 @@ def evaluate_run(run_dir: Path, extra_attempts: Optional[List[Path]] = None) -> 
 
     pass_k = _pass_k(cases, extra_attempts or [], meta.get("k", 1))
 
+    events_meta = meta.get("events") or {}
+
+    events_section = _events_section(meta)
     summary = {
         "run_id": meta.get("run_id"),
         "dataset_version": meta.get("dataset_version"),
@@ -143,9 +146,23 @@ def evaluate_run(run_dir: Path, extra_attempts: Optional[List[Path]] = None) -> 
             != (meta.get("real_db_after") or {}).get("sha256"),
         },
         "verified_at_asserted": False,
+        # P3 §9.4：events / tool_calls / seams_seen 三段由 runner 写进 meta，这里原样浮出
+        "events": events_section,
+        "tool_calls": dict(events_meta.get("tool_calls") or {}),
+        "seams_seen": list(events_meta.get("seams_seen") or []),
         "finished_at": meta.get("finished_at"),
     }
     return summary
+
+
+def _events_section(meta: Dict[str, Any]) -> Dict[str, Any]:
+    events_meta = meta.get("events") or {}
+    return {
+        "written": int(events_meta.get("written") or 0),
+        "dropped": int(events_meta.get("dropped") or 0),
+        "seams": dict(events_meta.get("seams") or {}),
+        "file": events_meta.get("file"),
+    }
 
 
 def _embedding_available() -> bool:

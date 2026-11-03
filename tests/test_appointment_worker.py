@@ -16,6 +16,7 @@ from sqlalchemy import text
 from agents.appointment.worker_result import WORKER_NAME, WorkerEvent, WorkerResult
 from agents.interview.interview_processor import InterviewProcessor, _history_to_slots
 from agents.interview.message_builder import MessageBuilder
+from config.time_config import TimeConfig
 from db.db_router import DatabaseRouter
 from services.appointment_task_service import AppointmentTaskService
 
@@ -156,14 +157,32 @@ class TestDriver:
         assert result.error_code is None, result.reply
         assert booked.status == "booked"
         assert booked.interview_id is not None
-        # 确认轮经 await→cancel→新单，换单后 WorkerResult.task_id 必须是新单
-        assert result.task_id != env["task"].task_id
+        # 同进程「推荐 → 确认」两轮走同一张 awaiting_confirm 单：它从未被置为 booked，
+        # 直接由本轮 `book_task` 从 awaiting_confirm 迁到 booked 是合法边，不必取消换单。
+        # 换单（await→cancel→新单）只留给跨进程恢复，见 `test_confirm_turn_swaps_a_recovered_task`。
+        assert result.task_id == env["task"].task_id
         assert env["processor"].task_id == booked.task_id
         assert result.completed is True
         assert result.success_claimed is False          # §5.2：P2 恒 False
         assert set(result.tables_written) == {
             "appointment_tasks", "interviews", "interviewer_schedules"}
         assert booked.verified_at is None
+
+    def test_confirm_turn_swaps_a_recovered_task(self, env):
+        """P2-D4 换单保留给跨进程恢复：拿回的 awaiting_confirm 单不是本进程推荐的 → 取消换新单再落库。
+
+        进程内状态（`_recommended_task_id`）已丢，无法确认那轮推荐是否被消费过，只能换单。
+        """
+        env["finder"].status = "recommendation"
+        _step(env, WorkerEvent.candidate_utterance(START_STR, "s1"), history=CANDIDATE_INFO)
+        env["processor"]._recommended_task_id = None       # 模拟重启：进程内推荐记录丢失
+
+        result = _step(env, WorkerEvent.candidate_confirm(True, "s1"))
+        assert result.error_code is None, result.reply
+        assert result.task_id != env["task"].task_id
+        assert env["svc"].get_task(env["task"].task_id).status == "cancelled"
+        assert env["svc"].get_task(result.task_id).status == "booked"
+        assert _count(env["router"], "interviews") == 1
 
     def test_confirm_turn_does_not_double_book(self, env):
         env["finder"].status = "recommendation"
@@ -191,6 +210,86 @@ class TestDriver:
         assert result.status == "failed"
         assert result.completed is False
         assert _count(env["router"], "interviews") == 0
+
+
+class TestBookingKeyFollowsBoundTask:
+    """回归：幂等键必须随「当前绑定的工单」派生，`interview_history` 里的缓存键不得活过它的工单。
+
+    实测（同一会话 2 轮「改时间」）：第二次 `book_interview` 仍带第一张单的键 → P2 `book_task`
+    的「键 ↔ task」自检拒成 `task_not_found`，而回复仍说「已为候选人…预约…」。真因是
+    `interview_history["client_request_id"]` 写一次永不清理，`_book_via_tool` 又无条件信任它。
+    这里走 P3 主路径（`deps` → `registry.call("book_interview")`）。
+    """
+
+    @pytest.fixture
+    def env(self, temp_db_path):
+        from agents.observability import NullSink
+        from agents.tools.deps import ToolDeps
+        from services.interview_service import InterviewService
+
+        router = DatabaseRouter(temp_db_path)
+        interviewer_id = router.interviewers.add_interviewer("张伟", "后端", "8 年后端经验")
+        svc = AppointmentTaskService(db_router=router)
+        finder = StubFinder()
+        finder.interviewer["id"] = interviewer_id
+        processor = InterviewProcessor(None, finder, MessageBuilder(), deps=ToolDeps(
+            task_service=svc, interview_service=InterviewService(db_path=temp_db_path),
+            finder=None, behavior_service=router.candidate_behavior, session_id="s1",
+            task_id=None, sink=NullSink(),
+            clock=lambda: datetime(2099, 1, 1, tzinfo=TimeConfig.BEIJING_TZ), max_steps=12))
+        yield {"router": router, "svc": svc, "processor": processor, "finder": finder,
+               "interviewer_id": interviewer_id}
+        router.close()
+
+    @staticmethod
+    def _confirms(svc, task):
+        """book_task 只接受 from=awaiting_confirm：把工单推到位。"""
+        svc.transition(task.task_id, "matching", "slots_ready")
+        svc.transition(task.task_id, "awaiting_confirm", "recommendation_ready")
+        return task
+
+    def test_second_booking_on_a_new_task_carries_its_own_key(self, env):
+        svc, processor = env["svc"], env["processor"]
+        first = self._confirms(svc, svc.create_or_get_task("chat:s1:1", "张三", "s1"))
+        _step(env, WorkerEvent.candidate_utterance(START_STR, "s1"), task_id=first.task_id,
+              history=CANDIDATE_INFO)
+        assert svc.get_task(first.task_id).status == "booked"
+        assert processor.interview_history["client_request_id"] == first.client_request_id
+
+        # 同一会话的第二场（新单）：history 里还残留第 1 单的缓存键，正是缺陷现场。
+        # 键必须跟着绑定的单走 —— 送去第 1 单的键会撞上「键 ↔ task」自检被拒（缺陷行为）。
+        second = self._confirms(svc, svc.create_or_get_task("chat:s1:2", "张三", "s1"))
+        assert processor.interview_history["client_request_id"] == first.client_request_id
+        calls = []
+        real = processor._call_tool
+        processor._call_tool = lambda name, payload: (
+            calls.append(payload["client_request_id"]), real(name, payload))[1]
+        try:
+            # 桩 finder 不看传入时间：两场落到同一档期，第二场按冲突被拒，键已送达 P2
+            result = asyncio.run(processor.step(
+                second.task_id, WorkerEvent.candidate_utterance(START_STR, "s1")))
+        finally:
+            processor._call_tool = real
+        # 缺陷现场是「键 ↔ task」对不上被拒写；修复后键是第 2 单的，P2 不再以 `task_not_found` 拒
+        assert calls == [second.client_request_id]
+        assert processor.interview_history["client_request_id"] == second.client_request_id
+        assert result.error_code != "task_not_found", result.reply
+
+    def test_stale_key_in_history_is_ignored(self, env):
+        """即使 history 被人为塞进别的单的键，工具收到的仍是当前绑定单的键。"""
+        svc, processor = env["svc"], env["processor"]
+        task = self._confirms(svc, svc.create_or_get_task("chat:s1:1", "张三", "s1"))
+        calls = []
+        real = processor._call_tool
+        processor._call_tool = lambda name, payload: (
+            calls.append(payload["client_request_id"]), real(name, payload))[1]
+        try:
+            result = _step(env, WorkerEvent.candidate_utterance(START_STR, "s1"), task_id=task.task_id,
+                           history=dict(CANDIDATE_INFO, client_request_id="chat:s1:999"))
+        finally:
+            processor._call_tool = real
+        assert calls == [task.client_request_id]
+        assert result.status == "booked"
 
 
 class TestCompletionReadsDbOnly:

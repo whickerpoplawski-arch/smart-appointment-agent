@@ -207,6 +207,47 @@ class MessageBuilder:
 
         return "\n机器人：抱歉，暂时无法安排该面试，请稍后重试或调整面试条件。\n"
 
+    def create_tool_failure_message(self, output, interview_history: Dict[str, Any]) -> str:
+        """工具失败 → 候选人话术（spec §7.5）。
+
+        按 `ToolOutput.error_code` 选话术，与 `short_error`（面向模型）分开：
+        工具层只给结构化码，这里负责「对候选人怎么说」。不存在成功断言短语。
+        """
+        code = getattr(output, "error_code", None)
+        code = getattr(code, "value", code) or str(code or "")
+        data = getattr(output, "data", None) or {}
+        short = getattr(output, "short_error", None) or ""
+        position = (interview_history or {}).get("position") or "该岗位"
+        start_time = (interview_history or {}).get("start_time", "")
+
+        if code == "past_time":
+            return "\n机器人：抱歉，所选时间已经过去了，请换一个未来的时间，我再为你安排。\n"
+        if code == "conflict":
+            return ("\n机器人：抱歉，该面试官在这个时间已有安排，可以换个时间或换一位面试官，"
+                    "你更想怎么调整？\n")
+        if code == "not_found":
+            return ("\n机器人：抱歉，没有找到这位面试官，请确认姓名，"
+                    "或者告诉我岗位方向，我按方向推荐。\n")
+        if code == "no_match":
+            return f"\n机器人：抱歉，{position}方向在{start_time}没有空闲的面试官，换个时间再试？\n"
+        if code == "invalid_arguments":
+            return "\n机器人：面试时间或信息还不完整，请补充后再试。\n"
+        if code == "needs_task":
+            return "\n机器人：请先把本次预约信息确认完整，我再为你锁定时间。\n"
+        if code == "task_terminal":
+            return "\n机器人：这个预约请求已经结束，重新预约请从新的请求开始。\n"
+        if code == "illegal_transition":
+            return "\n机器人：当前状态不允许这一步，已保持原状态，请稍后再试。\n"
+        if code == "step_limit":
+            return "\n机器人：抱歉，本次预约已达到最大处理步骤，已停止自动处理。\n"
+        if code == "old_release_failed":
+            return "\n机器人：抱歉，改期未完成，已为你保留原安排。\n"
+        if code == "manual_intervention":
+            return "\n机器人：操作未完成，已转人工处理，请稍候。\n"
+        if code == "unavailable_upstream":
+            return "\n机器人：外部服务暂时不可用，已跳过这一项。\n"
+        return f"\n机器人：抱歉，面试预约未完成：{short or '请稍后重试'}。\n"
+
     def create_missing_info_questions(self, missing_info: List[str]) -> str:
         """根据缺失信息创建询问"""
         questions = [self.missing_info_prompts.get(field, f"请补充{field}信息") for field in missing_info]

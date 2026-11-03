@@ -28,6 +28,9 @@ WRITE_ALLOWLIST = {
         "db/repositories/interview_repository.py",     # 仓储自身实现
         "services/interview_service.py",               # legacy service 调用它
         "db/base/interfaces.py",                       # 仓储接口声明
+        # P3 T1：显式写工具经 `book_task` 落库的调用点在工具层
+        "agents/tools/book.py",
+        "agents/tools/reschedule.py",
     },
     "add_schedule(": {
         "db/repositories/interviewer_repository.py",   # 仓储自身实现
@@ -213,7 +216,11 @@ class TestEvalsTasksReserve:
             destroy_workspace(workspace)
 
     def test_build_processor_default_is_legacy(self, tmp_path):
-        """`task_service` 默认哨兵 False：P1 数据集的对话行为逐字不变。"""
+        """`build_processor` 的默认是「拒绝」：P3 起 `deps` 必填，legacy 必须显式 `task_service=`。
+
+        P1 时代这里断言「缺省即 legacy」；P3 spec §9.4 把 `deps` 改成必填关键字，故默认行为
+        翻转为 `TypeError`——legacy 通道仍在，但要写明意图。
+        """
         from agents.interview.interview_processor import InterviewProcessor
         from agents.interview.message_builder import MessageBuilder
         from evals.harness import build_processor
@@ -221,7 +228,9 @@ class TestEvalsTasksReserve:
 
         workspace = create_workspace("legacy_probe", tmp_path)
         try:
-            processor, _ = build_processor(workspace, [])
+            with pytest.raises(TypeError):
+                build_processor(workspace, [])
+            processor, _ = build_processor(workspace, [], task_service=None)
             assert isinstance(processor, InterviewProcessor)
             assert processor.task_service is None
             assert isinstance(processor.message_builder, MessageBuilder)

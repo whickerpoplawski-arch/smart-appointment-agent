@@ -1,0 +1,7 @@
+{
+  "dataset_version": "interview_v2.0.0",
+  "reference_now": "2099-01-01T00:00:00+08:00",
+  "tool_layer": "agents.tools",
+  "derived_from": "interview_v1.0.0",
+  "description": "P3 显式工具基线：v1 逐条升级（g12 翻正 + 3 条新增），DB 终态 + 工单终态 + 工具事件三者为判据；live 默认跳过"
+}

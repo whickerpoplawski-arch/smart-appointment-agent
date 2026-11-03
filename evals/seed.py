@@ -30,16 +30,42 @@ def sqlite_url_for(db_file: Path) -> str:
 
 
 def file_fingerprint(path: Path) -> Optional[Dict[str, Any]]:
-    """mtime + sha256，用来证明真实库没有被写。"""
+    """mtime + sha256，用来证明真实库没有被写。
+
+    目录（P3 的 `logs/` 守卫）按排序后的「相对路径 + 文件指纹」再哈希一次；
+    判断「有没有被写」用 `fingerprint_equals()`（Windows 目录的 mtime 不可靠）。
+    """
     path = Path(path)
     if not path.exists():
         return None
+    if path.is_dir():
+        parts = []
+        for child in sorted(p for p in path.rglob("*") if p.is_file()):
+            child_fp = file_fingerprint(child)
+            if child_fp:
+                parts.append((child.relative_to(path).as_posix(), child_fp["sha256"], child_fp["mtime_ns"]))
+        digest = hashlib.sha256(repr(parts).encode("utf-8")).hexdigest()
+        return {"path": str(path), "sha256": digest, "mtime_ns": path.stat().st_mtime_ns,
+                "size": len(parts), "entries": parts}
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     stat = path.stat()
     return {"path": str(path), "sha256": digest.hexdigest(), "mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+
+
+def fingerprint_equals(before: Optional[Dict[str, Any]], after: Optional[Dict[str, Any]]) -> bool:
+    """两帧指纹是否等价。
+
+    文件：sha256 与 mtime_ns 都相同才算没动（与既有 real_db 守卫同口径）；
+    目录：只比内容（相对路径 + 每个文件的 sha256），目录自身 mtime 在 Windows 上不稳定。
+    """
+    if before is None or after is None:
+        return before is None and after is None
+    if "entries" in before or "entries" in after:
+        return before.get("entries") == after.get("entries")
+    return before.get("sha256") == after.get("sha256") and before.get("mtime_ns") == after.get("mtime_ns")
 
 
 @dataclass

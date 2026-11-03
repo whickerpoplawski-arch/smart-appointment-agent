@@ -825,6 +825,23 @@ v2 = capability **17** + regression **8** = **25 条**，live 1 条跳过 → �
 | R-6（已闭合，demo-only 例外） | P2 D-P2-16 + `ALLOWED_SAVE_INTERVIEW_CALLERS` 白名单测试（P2 §3.6） | §12.8 静态检查改为「命中 ⊆ P2 白名单」，不再要求 REST 改走 `book_task` | `tests/test_write_entry_points.py`（P2）绿；P3 只读该白名单 |
 | R-7（已闭合） | D-P2-15「Worker 不另建类」+ `WorkerResult` + `step(task_id, event)`（P2 §4.3） | §7.1.1 与 §12.2 的 Router 契约断言与 P2 的 `test_router_only_turn_writes_nothing` 互补（P3 加缝维度） | P2 `test_router_only_turn_writes_nothing` 绿；P3 `tests/test_router_contract.py` 绿 |
 
+#### 10.1.1 落地期实测的 P2 契约缺口（P3 全部绕开，P2 未改）
+
+P3 实施时对 P2 逐条探测，以下六处与本节假设有差异。处置一律是「P3 侧绕开 + 记录」，**不改 P2 代码**（P2 已冻结）：
+
+| # | 探测到的 P2 行为 | P3 的绕法 |
+|---|---|---|
+| ① | `book_task` 的 `client_request_id` 自检：**键对不上**返回 `task_not_found`，不是 `idempotency_mismatch` | `BOOK_ERROR_CODE_MAP` 把 `task_not_found → not_found`；reschedule 不复用原 task 的键去 book |
+| ② | reschedule 落回**同一个** task 时被 ① 的自检拒 | `reschedule` 工具先 `cancel` 再以新键 `book_interview`（`test_tools_reschedule.py`） |
+| ③ | `book_for_task` 不捕 `TransitionError`（调用方必须自己保证 `from` 态） | 驱动者 `_ensure_awaiting_confirm` 先把工单推到 `awaiting_confirm` 再调 `book_task`（`transition` 对同态重入返回 `ok=True`，无需前置判态） |
+| ④ | P2 没有 `get_task_by_interview_id`，`interviews` 行也不带 `task_id`；关联列只有 `appointment_tasks.interview_id` 一个方向 | 工具以 `task_id` 为主键作参数；`_interview_id_of_task(task_id)` 从 `get_task(task_id).interview_id` 反查，而不是从 interview 找 task；不新增 P2 API（台账事实 B） |
+| ⑤ | `cancel_task` **不回传**取消前状态 | `cancel` 工具以 P2 返回值（`status` / `tables_written` / `idempotent_replay`）为准，不从返回里推断 `from` 态 |
+| ⑥ | `mode=None` 会被 P2 归一成 `invalid_slot` | 工具层在入参校验阶段就判 `invalid_slot`，不把 `None` 送进 P2 |
+
+另：`transition(...)` 在同态重入时抛 `same_status` 前不落 stamps，故 `step_count` 只能走定向 UPDATE
+（`ToolDeps._write_step`），R-1「以 `stamps=` 回写」的口径在实现上落为「定向 UPDATE 写 `step_count`」，
+P2 仍是同一列的读方、P3 仍是写方。
+
 ### 10.2 阶段归属（方案 §6 落点指向非阶段或无人 spec 的行）
 
 | 行 | 本 spec 的处置 | 建议的所有者 spec |
