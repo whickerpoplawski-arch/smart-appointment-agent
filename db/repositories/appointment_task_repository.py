@@ -16,15 +16,37 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from agents.appointment.transitions import (
-    ACTIVE_STATUS,
-    TERMINAL,
-    Reason,
-    TaskStatus,
-    check_transition,
-    TransitionError,
-)
 from ..models import AppointmentTask, Interview, Interviewer, InterviewerSchedule
+
+# 注意：本模块**不得**在导入期碰 `agents.*`。`agents/__init__.py` 会拉入
+# consultant → services → `db.db_router`，而本模块正处在 `db.db_router` 的导入链上，
+# 任何顶层 `agents` 导入都会形成 `db → agents → services → db` 的环。
+
+
+class _Transitions:
+    """按需拿到 `agents.appointment.transitions` 的符号（模块级单例）。
+
+    `from agents.appointment.transitions import ...` 会执行 `agents/appointment/__init__.py` → `agents/__init__.py`，
+    后者拉入 consultant → services → `db.db_router`，形成 `db → agents → services → db` 的环。
+    这里把 import 推迟到**第一次真正迁状态时**（那时 `db.db_router` 早已初始化完毕），
+    因此两种导入顺序都安全，且与调用方拿到的是**同一个**模块对象，
+    `except TransitionError` 的类型身份不会分裂。
+    """
+
+    _module = None
+
+    def _load(self):
+        if _Transitions._module is None:
+            from agents.appointment import transitions
+
+            _Transitions._module = transitions
+        return _Transitions._module
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+
+_t = _Transitions()
 
 # Crockford base32（无 I/L/O/U），用于 26 位 task_id 后缀
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -82,7 +104,7 @@ class AppointmentTaskRepository:
             task = AppointmentTask(
                 task_id=_new_task_id(),
                 client_request_id=client_request_id,
-                status=TaskStatus.COLLECTING.value,
+                status=_t.TaskStatus.COLLECTING.value,
                 candidate_ref=candidate_ref or "未命名候选人",
                 session_id=session_id,
                 slots=None,
@@ -119,7 +141,7 @@ class AppointmentTaskRepository:
         with self.session_manager.session_scope() as session:
             base = session.query(AppointmentTask).filter(AppointmentTask.session_id == session_id)
             row = (
-                base.filter(AppointmentTask.status.notin_(tuple(TERMINAL)))
+                base.filter(AppointmentTask.status.notin_(tuple(_t.TERMINAL)))
                 .order_by(AppointmentTask.created_at.desc())
                 .first()
                 or base.order_by(AppointmentTask.created_at.desc()).first()
@@ -133,8 +155,19 @@ class AppointmentTaskRepository:
                 session.query(AppointmentTask)
                 .filter(
                     AppointmentTask.session_id == session_id,
-                    AppointmentTask.status.notin_(tuple(TERMINAL)),
+                    AppointmentTask.status.notin_(tuple(_t.TERMINAL)),
                 )
+                .order_by(AppointmentTask.created_at.asc())
+                .all()
+            )
+            return [_detach(session, row) for row in rows]
+
+    def list_by_session(self, session_id: str) -> List[AppointmentTask]:
+        """该会话的全部工单（含终态），按创建时间升序。"""
+        with self.session_manager.session_scope() as session:
+            rows = (
+                session.query(AppointmentTask)
+                .filter(AppointmentTask.session_id == session_id)
                 .order_by(AppointmentTask.created_at.asc())
                 .all()
             )
@@ -174,10 +207,11 @@ class AppointmentTaskRepository:
         typed_stamps = _validate_stamps(stamps)
         task = session.get(AppointmentTask, task_id)
         if task is None:
-            raise TransitionError("task_not_found", "", to_status)
-        check_transition(task.status, to_status)
+            raise _t.TransitionError("task_not_found", "", to_status)
+        _t.check_transition(task.status, to_status)
         task.status = to_status
-        task.reason = reason.value if isinstance(reason, Reason) else reason
+        if reason is not None:
+            task.reason = reason
         task.updated_at = _now()
         for key, value in typed_stamps.items():
             setattr(task, key, value)
@@ -189,7 +223,7 @@ class AppointmentTaskRepository:
         """写槽位快照；终态行拒绝（返回 None）。终态拒绝是「无副作用」的，不抛异常。"""
         with self.session_manager.session_scope() as session:
             task = session.get(AppointmentTask, task_id)
-            if task is None or task.status in TERMINAL:
+            if task is None or task.status in _t.TERMINAL:
                 return None
             task.slots = slots
             if interviewer_id is not None:
@@ -234,10 +268,10 @@ class AppointmentTaskRepository:
             task = session.get(AppointmentTask, task_id)
             if task is None:
                 return _result(False, "task_not_found", task_id=task_id)
-            if task.status == TaskStatus.CANCELLED.value:
+            if task.status == _t.TaskStatus.CANCELLED.value:
                 return _result(False, "task_terminal", task_id=task_id, status=task.status)
             # 幂等：已 committed 的工单直接回放，不再进写路径
-            if task.status == TaskStatus.BOOKED.value and task.interview_id is not None:
+            if task.status == _t.TaskStatus.BOOKED.value and task.interview_id is not None:
                 return _result(True, None, task_id=task_id, interview_id=task.interview_id,
                                replay=True)
 
@@ -281,7 +315,7 @@ class AppointmentTaskRepository:
             session.flush()
 
             # 先写环境终态、再迁工单：迁移抛错时整笔回滚（spec §5.5 第 5 条）
-            self.transition_in_session(session, task_id, TaskStatus.BOOKED.value, Reason.COMMITTED)
+            self.transition_in_session(session, task_id, _t.TaskStatus.BOOKED.value, _t.Reason.COMMITTED)
             task_step = session.get(AppointmentTask, task_id)
             task_step.interview_id = interview.id
             task_step.interviewer_id = interviewer_id
@@ -301,9 +335,9 @@ class AppointmentTaskRepository:
             task = session.get(AppointmentTask, task_id)
             if task is None:
                 return _result(False, "task_not_found", task_id=task_id)
-            if task.status == TaskStatus.CANCELLED.value:
+            if task.status == _t.TaskStatus.CANCELLED.value:
                 return _result(True, None, task_id=task_id, replay=True)
-            if task.status == TaskStatus.FAILED.value:
+            if task.status == _t.TaskStatus.FAILED.value:
                 return _result(False, "task_terminal", task_id=task_id, status=task.status)
 
             tables_written = ["appointment_tasks"]
@@ -321,13 +355,13 @@ class AppointmentTaskRepository:
                     )
                     tables_written += ["interviews", "interviewer_schedules"]
 
-            self.transition_in_session(session, task_id, TaskStatus.CANCELLED.value,
-                                       Reason.USER_CANCELLED)
+            self.transition_in_session(session, task_id, _t.TaskStatus.CANCELLED.value,
+                                       _t.Reason.USER_CANCELLED)
             task = session.get(AppointmentTask, task_id)
             task.cancel_actor = actor
             session.flush()
             return _result(True, None, task_id=task_id, tables_written=tables_written,
-                           status=TaskStatus.CANCELLED.value)
+                           status=_t.TaskStatus.CANCELLED.value)
 
     # ------------------------------------------------------------------
     # 内部
@@ -369,5 +403,7 @@ __all__ = [
     "AppointmentTaskRepository",
     "DB_COMMIT_TABLES",
     "STAMP_WHITELIST",
-    "ACTIVE_STATUS",
 ]
+
+# `ACTIVE_STATUS` 不在此重新导出：模块导入期读 `_t` 就会触发上面说的环。
+# 需要活跃态集合的调用方直接 `from agents.appointment.transitions import ACTIVE_STATUS`。
