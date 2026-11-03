@@ -7,7 +7,7 @@
 import os
 import asyncio
 import aiohttp
-from typing import Dict, Any, AsyncGenerator, Optional, Tuple
+from typing import Dict, Any, AsyncGenerator, Optional, Tuple, TYPE_CHECKING
 from .input_parser import InputParser
 from .interviewer_finder import InterviewerFinder, extract_duration_minutes
 from .message_builder import MessageBuilder
@@ -16,6 +16,9 @@ from langchain.tools import BaseTool
 from langchain_core.prompts import ChatPromptTemplate
 
 from agents.appointment.transitions import Reason
+
+if TYPE_CHECKING:  # 仅用于注解；运行时在 step() 内导入，避免顶层互相 import
+    from agents.appointment.worker_result import WorkerEvent, WorkerResult
 
 try:
     from langchain.agents import AgentExecutor, create_openai_tools_agent

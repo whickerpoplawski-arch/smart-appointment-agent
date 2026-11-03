@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy import text
 
-from agents.appointment.transitions import Reason
 from agents.appointment.worker_result import WORKER_NAME, WorkerEvent, WorkerResult
 from agents.interview.interview_processor import InterviewProcessor, _history_to_slots
 from agents.interview.message_builder import MessageBuilder
