@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON, Index, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON, Index, UniqueConstraint, CheckConstraint
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 
@@ -140,4 +140,51 @@ class CandidateRecommendation(Base):
     __table_args__ = (
         Index('ix_candidate_recommendations_user_sent', 'user_id', 'is_sent'),
         Index('ix_candidate_recommendations_interviewer_id', 'interviewer_id'),
+    )
+
+
+class AppointmentTask(Base):
+    """预约工单——「一次预约」的真相源（P2 spec §6.1）
+
+    与 Interview 的区别：Interview 是**已落库的副作用**，AppointmentTask 是**意图与进度**。
+    对话历史只是缓存，重启后一切以本表为准（G1：Chat ≠ 系统）。
+
+    status 的 CHECK 只覆盖 P2 的 6 个活跃态；P4/P6 的 7 个预留名故意不被接受
+    （D-P2-12），P6 走重建表迁移（spec §4.5.2）。
+    """
+    __tablename__ = 'appointment_tasks'
+    task_id = Column(String(40), primary_key=True)
+    client_request_id = Column(String(128), nullable=False)
+    status = Column(String(32), nullable=False, default='collecting')
+    candidate_ref = Column(String(64), nullable=False)
+    session_id = Column(String(64), nullable=True)   # 可空：P7 飞书入口没有 Web 会话
+    slots = Column(JSON, nullable=True)
+    interview_id = Column(Integer, ForeignKey('interviews.id'), nullable=True)
+    interviewer_id = Column(Integer, ForeignKey('interviewers.id'), nullable=True)
+    reason = Column(String(64), nullable=True)
+    step_count = Column(Integer, nullable=False, default=0)   # P2 只读，P3 写入（熔断计数）
+    cancel_actor = Column(String(16), nullable=True)
+    last_error_code = Column(String(48), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    accepted_at = Column(DateTime, nullable=True)
+    committed_at = Column(DateTime, nullable=True)
+    verified_at = Column(DateTime, nullable=True)    # P2 零写入，P4 写
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('collecting','matching','awaiting_confirm','booked','failed','cancelled')",
+            name='ck_appointment_tasks_status',
+        ),
+        CheckConstraint(
+            "cancel_actor IN ('candidate','interviewer','system') OR cancel_actor IS NULL",
+            name='ck_appointment_tasks_cancel_actor',
+        ),
+        # client_request_id 的唯一性用「具名唯一索引」表达而不是 UniqueConstraint：
+        # SQLite 对表级 UNIQUE 只生成 sqlite_autoindex_*，无法按名字在 PRAGMA index_list
+        # 里断言（spec §9.1 S-DDL）；具名索引同时满足唯一性与可断言性
+        Index('uq_appointment_tasks_client_request_id', 'client_request_id', unique=True),
+        Index('ix_appointment_tasks_status', 'status'),
+        Index('ix_appointment_tasks_session_id', 'session_id'),
+        Index('ix_appointment_tasks_interview_id', 'interview_id'),
     )

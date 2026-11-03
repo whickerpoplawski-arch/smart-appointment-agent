@@ -93,12 +93,7 @@ class InterviewRepository(BaseInterviewRepository):
                 raise ValueError(f"面试官不存在：ID={interviewer_id}")
 
             # 在同一事务、同一会话内复查冲突，避免“先查后写”之间被抢占
-            conflict = session.query(InterviewerSchedule).filter(
-                InterviewerSchedule.interviewer_id == interviewer_id,
-                InterviewerSchedule.status == "busy",
-                InterviewerSchedule.start_time < end_time,
-                InterviewerSchedule.end_time > start_time
-            ).first()
+            conflict = self._check_conflict(session, interviewer_id, start_time, end_time)
             if conflict:
                 raise ValueError(
                     f"面试官 {interviewer.name} 在 {start_time} 到 {end_time} 已有安排"
@@ -234,6 +229,75 @@ class InterviewRepository(BaseInterviewRepository):
             ).update({InterviewerSchedule.status: 'free'})
 
             return True
+
+    def book_for_task(self, task_id: str, interviewer_id: int, start_time: datetime,
+                      end_time: datetime, interview_info: Dict[str, Any],
+                      session_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        预约工单落库：同一事务内复查冲突 → 插面试 → 占日程 → 迁 booked
+
+        业务入口在 InterviewRepository（与 book_interview 同处），实现委托给
+        AppointmentTaskRepository，两边共用同一份代码：冲突判定、
+        `interviewer_schedules` 写入与状态机迁移都只有一处，不会出现两份口径。
+
+        Args:
+            task_id: 工单ID
+            interviewer_id: 面试官ID
+            start_time: 开始时间
+            end_time: 结束时间
+            interview_info: 面试信息（candidate_name/position/round/mode）
+            session_id: 会话ID（缺省沿用工单上的）
+
+        Returns:
+            {"ok","error_code","replay","task_id","interview_id","tables_written","status"}
+        """
+        # 延迟导入：appointment_task_repository 反向依赖本模块的 _check_conflict，
+        # 顶层导入会形成循环
+        from .appointment_task_repository import AppointmentTaskRepository
+
+        return AppointmentTaskRepository(self.session_manager).book_for_task(
+            task_id, interviewer_id, start_time, end_time, interview_info, session_id
+        )
+
+    def cancel_for_task(self, task_id: str, actor: str = 'candidate') -> Dict[str, Any]:
+        """
+        取消工单：同一事务内取消面试（若有）+ 释放日程 + 迁 cancelled
+
+        Args:
+            task_id: 工单ID
+            actor: 操作方，取值 candidate / interviewer / system
+
+        Returns:
+            {"ok","error_code","replay","task_id","interview_id","tables_written","status"}
+        """
+        from .appointment_task_repository import AppointmentTaskRepository
+
+        return AppointmentTaskRepository(self.session_manager).cancel_for_task(task_id, actor)
+
+    @staticmethod
+    def _check_conflict(session, interviewer_id: int, start_time: datetime,
+                        end_time: datetime) -> Optional[InterviewerSchedule]:
+        """
+        在同一事务、同一会话内复查时段冲突（半开区间重叠判定）
+
+        book_interview 与 book_for_task 共用这一份 SQL：冲突判定只有一处，
+        避免两条预约路径各写一套「先查后写」条件后逐渐漂移。
+
+        Args:
+            session: 调用方已开启的会话（本方法不自己开事务）
+            interviewer_id: 面试官ID
+            start_time: 开始时间
+            end_time: 结束时间
+
+        Returns:
+            冲突的 busy 日程行；无冲突返回 None
+        """
+        return session.query(InterviewerSchedule).filter(
+            InterviewerSchedule.interviewer_id == interviewer_id,
+            InterviewerSchedule.status == "busy",
+            InterviewerSchedule.start_time < end_time,
+            InterviewerSchedule.end_time > start_time
+        ).first()
 
     def _validate_interview_fields(self, candidate_name: str, position: str, round: str, mode: str,
                                    start_time: datetime, end_time: datetime) -> None:

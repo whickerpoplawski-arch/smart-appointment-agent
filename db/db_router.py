@@ -4,6 +4,7 @@ from .repositories import (
     InterviewRepository,
     KnowledgeRepository,
     CandidateBehaviorRepository,
+    AppointmentTaskRepository,
 )
 from typing import Optional
 
@@ -32,6 +33,7 @@ class DatabaseRouter:
         self.interview_repo = InterviewRepository(self.session_manager)
         self.knowledge_repo = KnowledgeRepository(self.session_manager)
         self.candidate_behavior_repo = CandidateBehaviorRepository(self.session_manager)
+        self.appointment_tasks = AppointmentTaskRepository(self.session_manager)
 
     @property
     def interviewers(self) -> InterviewerRepository:
@@ -52,6 +54,11 @@ class DatabaseRouter:
     def candidate_behavior(self) -> CandidateBehaviorRepository:
         """获取候选人行为数据仓库"""
         return self.candidate_behavior_repo
+
+    @property
+    def tasks(self) -> AppointmentTaskRepository:
+        """获取预约工单数据仓库（P2 spec §6.3）"""
+        return self.appointment_tasks
 
     def close(self):
         """关闭数据库连接"""
