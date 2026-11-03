@@ -5,7 +5,23 @@ Status: Draft（由 `2026-11-02-p2-appointment-task-spec.md` 与 `2026-11-02-p3-
 本文不新增任何设计决策：每一行的断言语义都复制自两份 spec 的题注；本文只做**归属、断言、悬空项**三件事的对账。
 
 > 测试 ID 解析规则（下文所有缩写均按此展开，命令统一用 `C:/Users/86180/AppData/Local/Programs/Python/Python312/python.exe -m pytest`）：
-> `T-ENUM` = `tests/test_transitions.py::test_enum_covers_plan_2_2`；`T-MATRIX` = `tests/test_transitions.py::test_matrix_allows`；`T-TERMINAL` = `tests/test_transitions.py::test_terminal_edges_rejected`；`T-DRIVER` = `tests/test_appointment_worker.py::test_status_sequence_in_one_turn`；`T-WORKER` = `tests/test_appointment_worker.py::test_worker_completion_reads_db_only`；`T-NOSLOT` = `tests/test_appointment_worker.py::test_finder_no_slot_fails`；`T-ROUTER` = `tests/test_router_contract.py::test_router_only_turn_writes_nothing`；`T-CANCEL` = `tests/test_appointment_task_service.py::test_cancel_writes_actor`；`T-RESTART` = `tests/test_appointment_persistence.py::test_restart_resumes_same_task`；`T-NO-TOUCH` = `tests/test_appointment_persistence.py::test_constructor_touches_no_db`；`T-RECOVER-NEG` = `tests/test_appointment_persistence.py::test_recover_skips_terminal`；`T-IDEMP-1..4`、`T-IDEMP-FEISHU`、`T-SINGLE-WRITE`、`T-PRESERVE` = `tests/test_appointment_task_service.py::test_*`（P2 §9.4）；`T-HONEST` = P2 §5.3 代码块；`T-CLAIM-INVARIANT`、`T-P3-CONTRACT` = P2 §9.5；`T-DBCOMMIT` = P2 §3.2 `AT -.-> J` 行；`T-DDL` = P2 §9.1 S-DDL。
+> **P2 落地后的实际 node id 映射（2026-11-03 · v2.2 对账）**——本文件原行引用的是计划期名字，落地时测试文件按功能拆分，对应关系如下（**只有这一组是真实可执行的 node id**）：
+>
+> **验证记录（2026-11-03）**：下列 23 个 node id 一次性执行 → `23 passed in 25.94s`（命令：`python -m pytest -q <node ids>`，逐条展开见下）。
+>
+> - `T-ENUM/T-MATRIX/T-TERMINAL` → `tests/test_transitions.py::TestEnum::test_enum_covers_plan_2_2` / `::TestLegalEdges::test_matrix_allows` / `::TestIllegalEdges::test_terminal_edges_rejected` / `::TestSelfCheck::test_cli_check_exits_zero`（18 passed）
+> - `T-DRIVER` → `tests/test_appointment_worker.py::TestDriver::test_recommendation_turn_advances_to_awaiting_confirm`、`::test_confirm_turn_books_on_a_live_task`
+> - `T-WORKER` → `tests/test_appointment_worker.py::TestCompletionReadsDbOnly::test_clearing_history_does_not_change_completion`
+> - `T-NOSLOT` → `tests/test_appointment_worker.py::TestDriver::test_no_slot_fails_task`
+> - `T-ROUTER` → `tests/test_write_entry_points.py::TestRouterContract::test_router_round_writes_nothing`
+> - `T-CANCEL` → `tests/test_appointment_task_service.py::TestCancel::*`
+> - `T-RESTART` → `tests/test_appointment_persistence.py::TestProcessRestart::test_restart_restores_task_and_slots`
+> - `T-NO-TOUCH` → `tests/test_appointment_persistence.py::TestNoTouchConstruction::test_constructors_do_not_touch_real_db`
+> - `T-RECOVER-NEG` → `tests/test_appointment_persistence.py::TestProcessRestart::test_recover_negative_for_terminal_tasks`
+> - `T-IDEMP-1/2/2-SPY/3/4`、`T-SINGLE-WRITE`、`T-P3-CONTRACT` → `tests/test_appointment_task_service.py`（`TestReadPaths` / `TestBookTask` / `TestTransition`）
+> - `T-HONEST` → `tests/test_appointment_worker.py::TestHonestyGate::*`；`T-CLAIM-INVARIANT` → `TestClaimAndCompletion::test_success_never_claimable_predicate`
+> - `T-FEISHU-RESERVE` → `tests/test_appointment_task_service.py::TestRecover::test_feishu_key_without_session_is_not_recovered`
+> - `S-EVAL-TASKS-RESERVE` → `tests/test_write_entry_points.py::TestEvalsTasksReserve::*`
 > P3 侧测试：`test_book_calls_book_task_once`、`test_book_does_not_call_save_interview`、`test_book_conflict_leaves_task_awaiting_confirm` 等见 P3 §12.1；`test_router_interview_emits_classify_then_tool_call`、`test_classify_payload_has_no_slots` 见 §12.2；`test_tool_events.py` 见 §12.3；`tests/test_trajectory_replay.py` 见 §8；eval 用例 `cap_p3_*` / `cap_g12_*` 见 §9.2；`db_commit` 白名单断言 `test_book_commit_event_lists_three_tables` 见 §4.4。
 > 状态口径：**closed** = 该行指定的阶段内已有可执行断言；**partial（Px 半段）** = 本阶段可断言的那半段已给出，另一半由具名下一期 spec 承接；**reserved（Px）** = 本阶段只留结构（列/键/常量），断言在 Px 的占位 spec 里。
 

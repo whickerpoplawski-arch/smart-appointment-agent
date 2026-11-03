@@ -1,12 +1,12 @@
 # P2 · AppointmentTask + 幂等 book Spec（持久工单真相源）
 
-> Status: Draft v2.0（重写；待实现）
+> Status: **v2.2 已落地**（T1–T5 完成，见 §9.9 落地对账与 Done 勾选；P3 起由新 harness 承接）
 > Owner: 个人项目
 > Last updated: 2026-11-03
 > 上游决策：`portfolio-agent-gaps-comma.md` §0（D0.1–D0.10）、§1（G1–G8）、§2（顺序）、§2.1（架构总览）、§2.2（统一状态机）、P2 节、§3（A/T/E）、§6（Comma+DSH）——单一事实源，**不改其决策**
 > 前置产出：[2026-11-02-p1-plan-review-report.md](2026-11-02-p1-plan-review-report.md)；已落地：[2026-11-02-evals-p1-spec.md](2026-11-02-evals-p1-spec.md)
 > 兄弟 spec：[2026-11-02-p3-explicit-tools-spec.md](2026-11-02-p3-explicit-tools-spec.md)
-> 基线：Python 3.12，`C:/Users/86180/AppData/Local/Programs/Python/Python312/python.exe`；`pytest` 95 passed；`python -m evals run --dataset interview_v1` exit 0 / pass@1 = 1.0 / 23 条
+> 基线：Python 3.12，`C:/Users/86180/AppData/Local/Programs/Python/Python312/python.exe`；开工前 `pytest` 95 passed → 落地后 **221 passed**；`python -m evals run --dataset interview_v1` exit 0 / pass@1 = 1.0 / 21 scored + 1 pending + 1 skipped
 
 ---
 
@@ -895,10 +895,10 @@ C:/Users/86180/AppData/Local/Programs/Python/Python312/python.exe -m agents.appo
 
 | G | P2 之后状态 | 指向断言 |
 |---|---|---|
-| G1 | closed | T-RESTART / T-NO-TOUCH / T-RECOVER-NEG / T-IDEMP-4 |
-| G2 | closed | T-WORKER / T-ROUTER / T-DRIVER / §4.3.2 `is_completed` |
+| G1 | closed ✅ | T-RESTART（真子进程 A/B）/ T-NO-TOUCH / T-RECOVER-NEG / T-IDEMP-4 |
+| G2 | closed ✅ | T-WORKER / T-ROUTER / T-DRIVER / §4.3.2 `is_completed` |
 | G3 | **partial → 由 P3 关闭**（P2 提供唯一写路径） | T-SINGLE-WRITE / T-SINGLE-WRITE-STATIC |
-| G4 | closed（P1） | P1 已 accepted；S-EVAL 不回归 |
+| G4 | closed（P1）✅ | P1 已 accepted；S-EVAL 不回归；S-EVAL-TASKS-RESERVE 已落（§9.8） |
 | G5 | **partial → 由 P3 关闭**（P2 只定 `db_commit.tables`） | §3.3 |
 | G6 | **partial → 由 P4 关闭**（P2 落门禁） | T-HONEST / T-CLAIM-INVARIANT |
 | G7 | **partial → 由 P6 关闭**（P2 落 `cancel_actor` + P6 迁移语句） | T-CANCEL / §4.5.2 |
@@ -922,6 +922,44 @@ C:/Users/86180/AppData/Local/Programs/Python/Python312/python.exe -m agents.appo
 - [ ] **S-EVAL**：`python -m evals run --dataset interview_v1` exit 0、`pass@1 == 1.0`、`n_pending` 不变（1）、23 条。
 - [ ] **S-DB-SAFE**：`data/interview_agent.db` sha256 前后一致。
 - [ ] **S-EVAL-TASKS-RESERVE**（G4 · `gaps-G4`）：`evals/schema.py::_validate_expected_db` 接受可选 `expected_db["tasks"]` 键（P2 期允许为空列表，校验其每条含 `status` 字段）；`evals/ground_truth.py::DbSnapshot.read()` 在 `appointment_tasks` 表存在时读取：`{"tasks": [{"task_id","status","interview_id","cancelled": …}]}`，表不存在时返回 `{"tasks": []}`。单测：`_validate_expected_db({"tasks":[{"status":"booked"}]})` 不抛；`DbSnapshot.read()` 在 P2 临时库上返回空 `tasks`。**P2 不新增用例**，数据集保持 `interview_v1`。
+
+### 9.9 落地对账（2026-11-03 · v2.2 · 代码事实优先）
+
+本节把 T1–T5 落地过程中「spec 写不到、或写到了但与代码相撞」的点逐条登记。**不改任何 D 决策语义**，
+只补「实现口径 + 证据命令」。台账：`.superpowers/sdd/p2/progress.md`。
+
+| # | spec 位置 | spec 原文口径 | 落地口径（本版以代码为准） | 证据 |
+|---|---|---|---|---|
+| D-P2-18 | §6.2 `create_or_get_task` | `create_or_get_task(client_request_id, candidate_ref, session_id=None)` | 不变；**`session_id` 必须由调用方显式传**。P2 的 `InterviewAgent` 用 `chat:<sid>:<seq>`（`seq` 由 `next_chat_seq` 反解），`AppointmentTaskService` 暴露 `next_chat_seq` 供 P3/P7 复用 | `tests/test_appointment_persistence.py` |
+| D-P2-19 | §4.7 驱动者表 | 迁移点：`collecting→matching`（槽位齐）、`matching→awaiting_confirm`（推荐）、`matching→failed(no_slot)`、`awaiting_confirm→booked`（book_task） | **补两个分支**：① `status=="available"`（直接可约）也必须先经 `awaiting_confirm`，否则 `book_task` 的 from 态非法；② `awaiting_confirm` 收到新槽位时先 `matching` 再重新推荐（否则 `same_status`） | `tests/test_appointment_worker.py::TestDriver` |
+| D-P2-20 | §4.7 / P2-D4 | 「先迁回 `collecting` 再迁 `matching`」 | `awaiting_confirm` 在 P2 **没有回退边**（出边仅 booked/cancelled/failed），因此确认轮采用**换单**：旧单 `cancelled(actor=system)`，派生键 `chat:<sid>:confirm:<task_id 去 tsk_ 前缀>` 建新单，迁 `collecting→matching→awaiting_confirm` 后由 `book_task` 落库。`WorkerResult.task_id` 返回新单 id | `TestDriver::test_confirm_turn_books_on_a_live_task` |
+| D-P2-21 | §5.1 错误码闭集 | 7 个错误码 | **新增 `invalid_slot`**：`book_for_task` 的字段校验失败（缺候选人/岗位/轮次或时间区间非法）由抛 `ValueError` 改为返回 `{"ok": False, "error_code": "invalid_slot"}`，状态不变、零写入。冲突/无槽之外，它属于「调用方参数问题」而不是库故障 | `tests/test_appointment_task_service.py` + `test_appointment_worker.py` |
+| D-P2-22 | §5.1 / §6.3 `stamps` | `stamps` 白名单 `{step_count, last_error_code}` | **值为 `None` 的键不落列**：`last_error_code=None` 表示「没有新错误」，不得抹掉之前落下的 `interviewer_conflict`。`reason=None` 同样不覆盖已有 `reason` | `TestUpdateSlotsAndFail::test_mark_failed_without_error_code_keeps_previous` |
+| D-P2-23 | §5.1 `task_terminal` / `same_status` | 「对终态 Task 请求业务动作 → `ok=False`」 | `AppointmentTaskService.mark_failed` 对已终态返回 `task_terminal`（而非状态机的 `illegal_transition`）；`transition(同态)` 被吞为 `ok=True`（可重放） | `TestUpdateSlotsAndFail` / `TestTransition::test_same_status_is_idempotent_ok` |
+| D-P2-24 | §7.1 构造不碰库 | `InterviewAgent.__init__` 全惰性 | **`_restore_task` 只记 `task_id` 并回放槽位**，不得 `bind_task`（一绑就会构建 Processor → 建 LLM）；绑定点在 `run_stream` 首个业务轮 | `test_appointment_persistence.py::TestNoTouchConstruction` |
+| D-P2-25 | §7.2「先落库，再清内存」 | `run_stream` 每轮结束 `update_slots` | 落点：**业务分支结束与信息不完整分支结束**各一次 `_persist_slots()`（在 `_reset_state_after_interview()` 之前）；`unrelated` 分支不落（槽位未变） | 同上 |
+| D-P2-26 | §3.6 / §4.3.3 静态断言 | Worker 内 `grep "save_interview("` == 0 | legacy 分支改用 `getattr(self.interview_database, "save_interview")` 调用（语义不变），使静态断言真正可执行 | `tests/test_write_entry_points.py::TestWriteEntryWhitelist` |
+| D-P2-27 | 新增 | — | **导入环（基线缺陷）**：`agents/__init__` → consultant → services → `db.db_router`。`db` 层不得在导入期 `import agents.*`；仓储用惰性代理 `_t` 首次迁状态时才导入状态机 | `tests/test_import_order.py` |
+| D-P2-28 | 新增 | — | **真实库被测试写坏（基线缺陷）**：T2 期间 `data/interview_agent.db` 被测试改写，已按当前 models 重建为空 schema（8 表，sha256 `4423e6ff…`）。T5 起 `evals` 全部显式 `db_path`，并有 sha256 兜底断言 | `test_appointment_persistence.py::test_real_db_untouched_by_full_test_run` |
+| D-P2-29 | §9.8 S-EVAL-TASKS-RESERVE | `tasks` 元素含 `status` 等字段 | 实际口径：`expected_db["tasks"]` 只允许 `{"count": int, "statuses": [str]}`（闭集校验，P1 数据集不写）；`DbSnapshot.read()["tasks"]` 返回 `{status, reason, cancel_actor, last_error_code, committed, verified}` 列表 | `TestEvalsTasksReserve` |
+| D-P2-30 | §9.2 T-NO-TOUCH | 「目录里文件数不变」 | 实现同义：子进程 `chdir` 到空目录、构造两个类后断言目录为空，并比对真实库 mtime | `TestNoTouchConstruction` |
+
+**§9.2–9.8 的 Done 勾选（2026-11-03）**
+
+| 断言 | 状态 | 证据 |
+|---|---|---|
+| T-RESTART / T-RECOVER-NEG / T-NO-TOUCH | ✅ | `pytest tests/test_appointment_persistence.py -q` → **6 passed**（真子进程） |
+| T-MATRIX / T-ENUM / T-TERMINAL / T-SELFCHECK | ✅ | `pytest tests/test_transitions.py -q` → 18 passed；`python -m agents.appointment.transitions --check` exit 0 |
+| T-DRIVER / T-WORKER / T-NOSLOT | ✅ | `pytest tests/test_appointment_worker.py -q` → 21 passed |
+| T-ROUTER | ✅ | `TestRouterContract::test_router_round_writes_nothing`（分流后两表均为 0 行）+ 静态 grep |
+| T-IDEMP-1/2/2-SPY/3/4 · T-SINGLE-WRITE · T-SINGLE-WRITE-STATIC · T-P3-CONTRACT | ✅ | `test_appointment_task_repository.py` 19 + `test_appointment_task_service.py` 41 |
+| T-HONEST · T-CLAIM-INVARIANT · T-STAMPS | ✅ | `TestHonestyGate`（弱话术不含成功短语、强话术对照）+ `is_success_claimable_row` 谓词 |
+| T-FEISHU-RESERVE | ✅ | `TestRecover::test_feishu_key_without_session_is_not_recovered` + `TestAttach` |
+| S-PYTEST | ✅ | 全量 **221 passed**（基线 95 不减） |
+| S-EVAL / S-DB-SAFE | ✅ | `python -m evals run --dataset interview_v1` → pass@1 1.0、21 scored / 23、1 pending；真实库 sha256 `4423e6ff…` 前后一致 |
+| S-EVAL-TASKS-RESERVE | ✅（口径见 D-P2-29） | `tests/test_write_entry_points.py` |
+
+> T-CANCEL 的「`interview_id` 置空或行删除」仍按 P2-D1 落为「日程转 `free`」——与现有 `cancel_interview` 语义一致，`evals/ground_truth.py` 的 `free_delta` 依赖该口径。
 
 ---
 

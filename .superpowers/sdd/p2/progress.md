@@ -27,3 +27,20 @@
   不覆盖已有 `last_error_code`。
 | T4 Worker 绑定 | 绿 `e3c03b5` / `2d78f13` | `test_appointment_worker.py` 21 passed；全量 202；evals 1.0 |
 | T5 Agent 装配 + 重启 + evals 预留 | 绿 | `test_appointment_persistence.py` 6（真子进程）、`test_write_entry_points.py` 13；全量 **221**；evals 1.0；真实库 sha256 不变 |
+| T6 收尾：spec 对账 + 台账 | 绿 | spec §9.9（D-P2-18…30）+ Done 勾选；`landing-trace.md` 节点解析记录（23 node → 23 passed） |
+
+## 最终验收（2026-11-03）
+
+- 全量：`pytest -q` → **221 passed**（基线 95）
+- 评测：`python -m evals run --dataset interview_v1` → pass@1 **1.0**，21 scored / 23，pending 1（`pend_g12_past_slot_currently_books`，P3 承接）
+- 真实库：`data/interview_agent.db` sha256 `4423e6ff…`，跑前跑后一致（有兜底断言）
+- 分支：`feat/p2-appointment-task`（worktree `D:/XunLei/cairn/saa2-p2`），**未 push**
+
+## 留给 P3（新 harness）的接口事实
+
+- Worker 入口：`InterviewProcessor.step(task_id, WorkerEvent) -> WorkerResult`，返回值全部回读 DB
+- 唯一写路径：`AppointmentTaskService.book_task(...)`，返回键闭集 `{ok,error_code,task_id,interview_id,replay,tables_written,status}`
+- 错误码闭集新增 `invalid_slot`（字段非法），其余同 spec §5.1
+- `db_commit.tables` 顺序固定：`["appointment_tasks","interviews","interviewer_schedules"]`
+- 确认轮会换单（`chat:<sid>:confirm:<slug>`），新 `task_id` 由 `WorkerResult.task_id` 返回
+- 惰性装配：`InterviewAgent(task_service=..., interview_service=..., interview_db=..., llm=..., task_id=...)`
