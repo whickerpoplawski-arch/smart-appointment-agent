@@ -53,6 +53,46 @@ class MessageBuilder:
             "检查摄像头与麦克风可用，并留意会议链接与入会密码。\n"
         )
 
+    def create_interview_committed_message(self, interviewer: Dict[str, Any],
+                                           interview_history: Dict[str, Any]) -> str:
+        """创建「已预约、待确认」话术（P2 成功门禁用，spec §5.3）
+
+        与 `create_interview_success_message` 的区别：**不含任何成功断言短语**
+        （「预约成功」「预订成功」「success」），只陈述已登记的预约事实并说明待确认。
+        门禁不变量（T-HONEST）依赖这一点，改动时必须跑 `test_appointment_worker.py`。
+        """
+        candidate_name = interview_history.get('candidate_name', '候选人')
+        position = interview_history.get('position', '')
+        round_name = interview_history.get('round', '')
+        mode = interview_history.get('mode', '线上')
+        start_time = interview_history.get('start_time', '')
+        interviewer_name = interviewer.get('name', '面试官')
+
+        header = (
+            f"\n机器人：已为候选人{candidate_name}登记{position}{round_name}面试，"
+            f"面试官：{interviewer_name}，时间：{start_time}，形式：{mode}。"
+            "该预约已登记，稍后确认。\n"
+        )
+        return header + self._create_mode_tip(mode)
+
+    def create_booking_conflict_message(self) -> str:
+        """时段刚被占用（R-CONFLICT）：状态不变，请候选人换时段重试"""
+        return (
+            "\n机器人：抱歉，该时段刚被占用，请换一个时间，"
+            "我按新时间为你重新安排（原预约未提交）。\n"
+        )
+
+    def create_no_slot_message(self) -> str:
+        """finder 无可用面试官且不可恢复 → matching 收尾为 failed(no_slot)"""
+        return "\n机器人：抱歉，暂时没有可用的面试官时段，请换个时间再试。\n"
+
+    def create_illegal_transition_message(self) -> str:
+        """状态机拒绝当前动作（§5.4）：状态不变，不写库"""
+        return "\n机器人：当前状态不允许该操作，请稍后再试或重新发起预约。\n"
+
+    def create_cancelled_message(self) -> str:
+        return "\n机器人：好的，已取消本次预约。\n"
+
     def create_interviewer_recommendation_message(self, original_interviewer: Dict[str, Any],
                                                   recommended_interviewer: Dict[str, Any],
                                                   interview_history: Dict[str, Any],

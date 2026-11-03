@@ -7,13 +7,15 @@
 import os
 import asyncio
 import aiohttp
-from typing import Dict, Any, AsyncGenerator, Optional
+from typing import Dict, Any, AsyncGenerator, Optional, Tuple
 from .input_parser import InputParser
 from .interviewer_finder import InterviewerFinder, extract_duration_minutes
 from .message_builder import MessageBuilder
 from .interview_database import InterviewDatabase
 from langchain.tools import BaseTool
 from langchain_core.prompts import ChatPromptTemplate
+
+from agents.appointment.transitions import Reason
 
 try:
     from langchain.agents import AgentExecutor, create_openai_tools_agent
@@ -111,12 +113,26 @@ class InterviewProcessor:
     """面试预约处理器"""
 
     def __init__(self, input_parser: InputParser, interviewer_finder: InterviewerFinder,
-                 message_builder: MessageBuilder, interview_database: InterviewDatabase, llm=None):
+                 message_builder: MessageBuilder, interview_database: InterviewDatabase, llm=None,
+                 *, task_service=None, task_id: Optional[str] = None):
         self.input_parser = input_parser
         self.interviewer_finder = interviewer_finder
         self.message_builder = message_builder
         self.interview_database = interview_database
         self.llm = llm
+
+        # ---- P2：Processor 即 Worker（D-P2-15）----
+        # `task_service=None` → legacy 路径：`_process_successful_interview` 仍走
+        # `InterviewDatabase.save_interview`，与 P1 基线逐字一致（§7.3）。
+        self.task_service = task_service
+        self.task_id = task_id
+        self.interview_history: Dict[str, Any] = {}
+        # 本轮的工单上下文：`handle_complete_interview` 可能换单（P2-D4 的确认轮），
+        # 换单后的 id 放这里，而不是覆盖本轮的入参 `task_id`
+        self._active_task_id: Optional[str] = None
+        self.last_tables_written: Tuple[str, ...] = ()
+        self.last_error_code: Optional[str] = None
+        self._last_task_failure_message: Optional[str] = None
 
         # 初始化天气工具和 agent（不可用时不影响面试预约主流程）
         self.agent_executor = None
@@ -280,8 +296,15 @@ class InterviewProcessor:
             yield self.message_builder.create_unrelated_message()
 
     async def handle_complete_interview(self, interview_history: Dict[str, Any],
-                                        session_id: str) -> AsyncGenerator[str, None]:
-        """处理面试信息完整的情况"""
+                                        session_id: str,
+                                        task_id: Optional[str] = None) -> AsyncGenerator[str, None]:
+        """处理面试信息完整的情况
+
+        `task_id` 只由 `step()`（Worker 入口）传入；`InterviewAgent` 直接调用时不传，
+        迁移驱动全部跳过，对外行为与 P1 一致。
+        """
+        task_id = task_id or self.task_id
+        self._active_task_id = task_id
         # 候选人拒绝了推荐
         if interview_history.get('recommendation_declined'):
             reply = self.message_builder.create_recommendation_declined_message(self.llm)
@@ -292,7 +315,11 @@ class InterviewProcessor:
         # 候选人确认了推荐面试官
         if interview_history.get('confirmed_interviewer'):
             interviewer = interview_history['confirmed_interviewer']
-            reply = await self._process_successful_interview(interviewer, interview_history, session_id)
+            # 驱动者（spec §4.7 / P2-D4）：awaiting_confirm -> booked 只能由 book_task 完成，
+            # 所以确认轮先把工单「退回」collecting→matching，再由 book_task 迁到 booked。
+            self._ensure_rebooking(task_id, session_id)
+            reply = await self._process_successful_interview(interviewer, interview_history,
+                                                             session_id, self._active_task_id)
             yield f"[REPLY][面试机器人]{reply}"
             self._clear_recommendation_state(interview_history)
             return
@@ -304,6 +331,8 @@ class InterviewProcessor:
 
         # 补齐默认形式与时长后再匹配
         self._prepare_defaults(interview_history)
+        self._ensure_matching(task_id, interview_history)
+        task_id = self._active_task_id
 
         # 收集思考过程
         thought_msgs = []
@@ -315,10 +344,14 @@ class InterviewProcessor:
             yield msg
 
         status = result.get('status')
+        if status == 'no_available_interviewer':
+            self._ensure_failed(task_id, Reason.NO_SLOT.value, "no_slot")
 
         if status == 'recommendation':
+            self._ensure_awaiting_confirm(task_id)
             original_interviewer = result.get('original_interviewer')
-            recommended_interviewer = result.get('recommended_interviewer')
+            # 候选人确认推荐后就用**推荐的那个**面试官落库（推荐的是具体人，不是原始人）
+            recommended_interviewer = result.get('recommended_interviewer') or original_interviewer
 
             recommendation_msg = self.message_builder.create_interviewer_recommendation_message(
                 original_interviewer, recommended_interviewer, interview_history, self.llm
@@ -335,7 +368,10 @@ class InterviewProcessor:
             return
 
         if status == 'available':
-            reply = await self._process_successful_interview(result, interview_history, session_id)
+            # 直接可约也要经一次 awaiting_confirm：book_task 只接受 from=awaiting_confirm（§4.2）
+            self._ensure_awaiting_confirm(task_id)
+            reply = await self._process_successful_interview(result, interview_history, session_id,
+                                                             self._active_task_id)
             yield f"[REPLY][面试机器人]{reply}"
             return
 
@@ -353,7 +389,8 @@ class InterviewProcessor:
 
     async def _process_successful_interview(self, interviewer: Dict[str, Any],
                                             interview_history: Dict[str, Any],
-                                            session_id: str) -> str:
+                                            session_id: str,
+                                            task_id: Optional[str] = None) -> str:
         """处理面试预约成功的情况，线下面试结合北京天气生成出行提醒"""
         minutes = self.resolve_duration(interview_history.get("round"),
                                         interview_history.get("duration"))
@@ -367,17 +404,25 @@ class InterviewProcessor:
             interview_history['booking_failed'] = True
             return self.message_builder.create_save_failure_message("面试时间无法识别")
 
-        success, reason = self.interview_database.save_interview(
-            interviewer["id"], start_time, end_time, interview_history, session_id
-        )
-        if not success:
-            interview_history['booking_failed'] = True
-            return self.message_builder.create_save_failure_message(reason)
+        if self.task_service is not None:
+            base_message = self._commit_via_task(task_id, interviewer, interview_history,
+                                                 start_time, end_time, session_id)
+            if base_message is None:
+                return self._last_task_failure_message
+        else:
+            success, reason = self.interview_database.save_interview(
+                interviewer["id"], start_time, end_time, interview_history, session_id
+            )
+            if not success:
+                interview_history['booking_failed'] = True
+                return self.message_builder.create_save_failure_message(reason)
 
-        interview_history['booking_failed'] = False
-        base_message = self.message_builder.create_interview_success_message(
-            interviewer, interview_history
-        )
+            interview_history['booking_failed'] = False
+            base_message = self.message_builder.create_interview_success_message(
+                interviewer, interview_history
+            )
+
+        self._sync_duration(interview_history, start_time, end_time)
 
         # 线下面试才需要结合天气给出出行建议；线上和天气失败都不阻断预约成功
         if interview_history.get('mode') == '线下' and self.llm and self.agent_executor:
@@ -419,3 +464,213 @@ class InterviewProcessor:
         yield f"[THOUGHT][面试机器人]面试信息不完整，缺少：{', '.join(missing)}，我需要询问候选人补充这些信息"
         reply = self.message_builder.create_missing_info_questions(missing)
         yield f"[REPLY][面试机器人]{reply}"
+
+    @staticmethod
+    def _sync_duration(interview_history: Dict[str, Any], start_time, end_time) -> None:
+        """把实际落库的时长回写到会话历史。
+
+        `_prepare_defaults` 只在 `duration` 可解析时才补默认值；LLM 给出「未知」、
+        而轮次也没有默认时长时，`_ensure_matching` 会因此认为槽位不齐。落库成功后
+        用 end−start 反推真实时长，保证「已落库」必然意味着「槽位齐」。
+        """
+        if end_time and start_time:
+            minutes = int((end_time - start_time).total_seconds() // 60)
+            if minutes > 0:
+                interview_history["duration"] = f"{minutes}分钟"
+                if not interview_history.get("start_time") or \
+                        interview_history["start_time"] == "未知":
+                    interview_history["start_time"] = start_time.strftime("%Y-%m-%d %H:%M")
+
+    # ------------------------------------------------------------------
+    # P2 驱动者（spec §4.7 / D-P2-17）：Processor 即 Worker
+    # ------------------------------------------------------------------
+
+    def bind_task(self, task_id: str) -> None:
+        """绑定工单；绑定后 `step()` 可只传事件。"""
+        self.task_id = task_id
+
+    def _ensure_matching(self, task_id: Optional[str],
+                         interview_history: Dict[str, Any]) -> None:
+        """`collecting → matching`：槽位齐（姓名/时间/时长）即迁；不齐不迁（§4.7）。
+
+        已经在 `awaiting_confirm` 时迁到 `matching`，这样同一轮里后面发出的推荐
+        （`_ensure_awaiting_confirm`）能合法回迁——否则「推荐 → 再推荐」会撞
+        `awaiting_confirm → awaiting_confirm` 的 `same_status`。
+        终态（booked/failed/cancelled）一律不动。
+        """
+        if self.task_service is None or not task_id:
+            return
+        history = interview_history or {}
+        ready = all(history.get(field) and history.get(field) != "未知"
+                    for field in ("candidate_name", "start_time", "duration"))
+        if not ready:
+            return
+        task = self.task_service.get_task(task_id)
+        if task is not None and task.status in ("collecting", "awaiting_confirm"):
+            self.task_service.transition(task_id, "matching", Reason.SLOTS_READY.value)
+
+    def _ensure_awaiting_confirm(self, task_id: Optional[str]) -> None:
+        """`matching → awaiting_confirm`：推荐已发出、等候选人确认。"""
+        if self.task_service is None or not task_id:
+            return
+        task = self.task_service.get_task(task_id)
+        if task is not None and task.status == "matching":
+            self.task_service.transition(task_id, "awaiting_confirm",
+                                         Reason.RECOMMENDATION_READY.value)
+
+    def _ensure_rebooking(self, task_id: Optional[str], session_id: Optional[str]) -> None:
+        """确认轮先回到 `matching`（P2-D4）。
+
+        `awaiting_confirm → booked` 只允许由 `book_task` 完成，所以确认轮必须把工单先退回
+        可预约态，否则 `book_task` 会以 `illegal_transition` 失败。
+
+        P2 的状态机没有任何「回退」边（`awaiting_confirm` 的出边只有 booked/cancelled/failed），
+        因此退回只能**换单**：把旧单收尾为 `cancelled(actor=system)`，用派生键
+        `chat:<sid>:confirm:<task_id>` 建新单（同键不可复活，D-P2-06），再迁到
+        `matching → awaiting_confirm`，让本轮的 `book_task` 有合法的 from 态。
+        旧单保留终态可审计，新单承接真正的落库；`self.task_id` 随之更新。
+        """
+        if self.task_service is None or not task_id:
+            return
+        self._active_task_id = task_id
+        task = self.task_service.get_task(task_id)
+        if task is None:
+            return
+        if task.status == "awaiting_confirm":
+            self.task_service.cancel_task(task_id, actor="system")
+            slug = task_id[4:] if task_id.startswith("tsk_") else task_id
+            recreated = self.task_service.create_or_get_task(
+                f"chat:{session_id}:confirm:{slug}", task.candidate_ref, session_id
+            )
+            self.task_id = recreated.task_id
+            self._active_task_id = recreated.task_id
+        elif task.status == "collecting":
+            self.task_service.transition(task_id, "matching", Reason.SLOTS_READY.value)
+        elif task.status == "matching":
+            self.task_service.transition(task_id, "awaiting_confirm",
+                                         Reason.RECOMMENDATION_READY.value)
+        else:
+            return
+
+        current = self.task_service.get_task(self._active_task_id)
+        if current is not None and current.status in ("collecting", "matching"):
+            # 新单从 collecting 起；本轮必然经过一次 awaiting_confirm，
+            # 否则 book_task 没有合法的 from 态（§4.2）
+            if current.status == "collecting":
+                self.task_service.transition(self._active_task_id, "matching",
+                                             Reason.SLOTS_READY.value)
+            self.task_service.transition(self._active_task_id, "awaiting_confirm",
+                                         Reason.RECOMMENDATION_READY.value)
+
+    def _ensure_failed(self, task_id: Optional[str], reason: str,
+                       error_code: Optional[str]) -> None:
+        """`matching → failed(reason)`；已终态则跳过（service 层返回 `task_terminal`）。"""
+        if self.task_service is None or not task_id:
+            return
+        self.task_service.mark_failed(task_id, reason, error_code)
+
+    def _commit_via_task(self, task_id: str, interviewer: Dict[str, Any],
+                         interview_history: Dict[str, Any], start_time, end_time,
+                         session_id: Optional[str]) -> Optional[str]:
+        """经 `book_task`（唯一写路径）落库；成功返回弱话术，失败返回 None。
+
+        失败时的原因写在 `self._last_task_failure_message`，并把 `last_error_code` / `tables_written`
+        留给 `step()` 组装 `WorkerResult`。话术按 §5.4 的唯一口径选：冲突→换时间；
+        终态→当前状态不允许；其它→沿用既有保存失败话术（原因文本取自既有入口）。
+        """
+        self.last_tables_written = ()
+        self.last_error_code = None
+        try:
+            interviewer_id = int(interviewer["id"])
+        except (KeyError, TypeError, ValueError):
+            interview_history['booking_failed'] = True
+            self._last_task_failure_message = self.message_builder.create_save_failure_message(
+                "面试官信息无效"
+            )
+            return None
+
+        result = self.task_service.book_task(
+            task_id=task_id,
+            interviewer_id=interviewer_id,
+            start_time=start_time,
+            end_time=end_time,
+            interview_info=interview_history,
+            session_id=session_id,
+        )
+        self.last_tables_written = tuple(result.get("tables_written") or ())
+        self.last_error_code = result.get("error_code")
+
+        if result.get("ok"):
+            interview_history['booking_failed'] = False
+            return self.message_builder.create_interview_committed_message(
+                interviewer, interview_history
+            )
+
+        interview_history['booking_failed'] = True
+        if self.last_error_code == "interviewer_conflict":
+            reply = self.message_builder.create_booking_conflict_message()
+        elif self.last_error_code in ("task_terminal", "illegal_transition", "task_not_found"):
+            reply = self.message_builder.create_illegal_transition_message()
+        else:
+            reply = self.message_builder.create_save_failure_message("数据库写入失败")
+        self._last_task_failure_message = reply
+        return None
+
+    async def step(self, task_id: str, event: "WorkerEvent") -> "WorkerResult":
+        """Worker 唯一入口（§4.3.1）：所有业务副作用经由 `self.task_service`。
+
+        返回值里的 `status` / `completed` / `success_claimed` **一律从 DB 回读**，
+        不从 `interview_history` 或话术推断；因此清空内存不会改变结论（T-WORKER）。
+        """
+        from agents.appointment.worker_result import WorkerResult
+
+        if self.task_service is None:
+            raise RuntimeError("legacy: step() requires task_service")
+        if not task_id:
+            raise RuntimeError("task_id not bound")
+        if event.kind not in ("candidate_utterance", "candidate_confirm"):
+            raise NotImplementedError(f"event kind reserved for later phases: {event.kind}")
+
+        self.bind_task(task_id)
+        if event.kind == "candidate_confirm":
+            # 确认事件等价于「推荐被接受」：把 recommended 提为 confirmed 并清掉等待标志
+            recommended = self.interview_history.get("recommended_interviewer")
+            if event.payload.get("confirm") and recommended:
+                self.interview_history["confirmed_interviewer"] = recommended
+            self.interview_history["awaiting_confirmation"] = False
+
+        tokens = []
+        async for token in self.handle_complete_interview(
+            self.interview_history, event.payload.get("session_id"), task_id
+        ):
+            tokens.append(token)
+        reply = "".join(t for t in tokens if t.startswith("[REPLY]"))
+
+        return WorkerResult(
+            task_id=self.task_id,
+            status=self._db_status(self.task_id),
+            completed=self.task_service.is_completed(self.task_id),
+            reply=reply,
+            success_claimed=self.task_service.is_success_claimable(self.task_id),
+            tables_written=self.last_tables_written,
+            error_code=self.last_error_code,
+            slots=_history_to_slots(self.interview_history),
+            notify=None,
+        )
+
+    def _db_status(self, task_id: str) -> str:
+        task = self.task_service.get_task(task_id)
+        return task.status if task is not None else ""
+
+
+def _history_to_slots(history: Dict[str, Any]) -> Dict[str, Any]:
+    """会话槽位快照（落 `appointment_tasks.slots`）。
+
+    只收可回放的业务字段：推荐/等待这类**瞬时**标志不进快照，
+    否则重启后会拿着过期的「等待确认」状态去续聊。
+    """
+    return {
+        key: (history or {}).get(key)
+        for key in ("candidate_name", "position", "round", "mode", "start_time", "duration",
+                    "interviewer_name", "preference")
+    }

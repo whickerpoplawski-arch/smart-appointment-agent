@@ -77,6 +77,15 @@ def _validate_stamps(stamps: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return dict(stamps)
 
 
+def _applied_stamps(stamps: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """落列时跳过 `None`：`last_error_code=None` 表示「没有新错误」，不是「把旧错误抹掉」。
+
+    回归于一次真实踩坑：收尾失败时顺手传 `last_error_code=None`，把之前落下的
+    `interviewer_conflict` 覆盖没了，下一轮就没法按码分支。
+    """
+    return {key: value for key, value in _validate_stamps(stamps).items() if value is not None}
+
+
 class AppointmentTaskRepository:
     """`appointment_tasks` 数据访问对象。"""
 
@@ -204,14 +213,13 @@ class AppointmentTaskRepository:
     def transition_in_session(self, session: Session, task_id: str, to_status: str, reason: str,
                               stamps: Optional[Dict[str, Any]] = None) -> AppointmentTask:
         """在**调用方**的事务里迁状态；`book_for_task` 靠它复用同一个 session。"""
-        typed_stamps = _validate_stamps(stamps)
+        typed_stamps = _applied_stamps(stamps)
         task = session.get(AppointmentTask, task_id)
         if task is None:
             raise _t.TransitionError("task_not_found", "", to_status)
         _t.check_transition(task.status, to_status)
         task.status = to_status
-        if reason is not None:
-            task.reason = reason
+        task.reason = reason if reason is not None else task.reason
         task.updated_at = _now()
         for key, value in typed_stamps.items():
             setattr(task, key, value)
@@ -275,10 +283,17 @@ class AppointmentTaskRepository:
                 return _result(True, None, task_id=task_id, interview_id=task.interview_id,
                                replay=True)
 
-            InterviewRepository._validate_interview_fields(
-                None, interview_info.get("candidate_name"), interview_info.get("position"),
-                interview_info.get("round"), interview_info.get("mode"), start_time, end_time,
-            )
+            # 字段校验失败是**调用方**的参数问题（缺姓名/岗位/轮次，或时间区间非法），
+            # 不是库坏了：按领域错误码返回，且事务里什么都没写、状态不变。
+            try:
+                InterviewRepository._validate_interview_fields(
+                    None, interview_info.get("candidate_name"), interview_info.get("position"),
+                    interview_info.get("round"), interview_info.get("mode"), start_time, end_time,
+                )
+            except ValueError:
+                task.last_error_code = "invalid_slot"
+                task.updated_at = _now()
+                return _result(False, "invalid_slot", task_id=task_id, status=task.status)
             interviewer = session.get(Interviewer, interviewer_id)
             if interviewer is None:
                 return _result(False, "interviewer_not_found", task_id=task_id)
